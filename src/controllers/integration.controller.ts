@@ -2,10 +2,12 @@ import { Request, Response, NextFunction } from 'express'
 import { Integration } from '../models/Integration'
 import { getGoogleAdsAuthUrl, exchangeGoogleAdsCode, getGoogleAdsUserInfo, saveGoogleAdsIntegration, fetchGoogleAdsLeadForms, fetchGoogleAdsLeads } from '../services/googleAds.service'
 import { getLinkedInAuthUrl, exchangeLinkedInCode, getLinkedInUserInfo, saveLinkedInIntegration, fetchLinkedInLeadGenForms, fetchLinkedInLeads } from '../services/linkedin.service'
+import { fetchAndSubscribeAllPages } from '../services/meta.service'
 import { Lead } from '../models/Lead'
 import { emitToTeam } from '../config/socket'
 import axios from 'axios'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { logger } from '../utils/logger'
 
 export const getIntegrations = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -54,7 +56,7 @@ export const disconnectIntegration = async (req: Request, res: Response, next: N
 export const getMetaOAuthUrl = (_req: Request, res: Response) => {
   const { META_APP_ID, APP_BASE_URL } = process.env
   const redirectUri = `${APP_BASE_URL}/api/integrations/meta/callback`
-  const scopes = 'leads_retrieval,pages_read_engagement,pages_manage_metadata'
+  const scopes = 'leads_retrieval,pages_read_engagement,pages_manage_metadata,pages_show_list'
 
   const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code`
 
@@ -73,8 +75,21 @@ export const handleMetaOAuthCallback = async (req: Request, res: Response, next:
 
     const { access_token, expires_in } = tokenRes.data
 
+    // Exchange short-lived token for long-lived token
+    const longLivedTokenRes = await axios.get('https://graph.facebook.com/v19.0/oauth/access_token', {
+      params: {
+        grant_type: 'fb_exchange_token',
+        client_id: META_APP_ID,
+        client_secret: META_APP_SECRET,
+        fb_exchange_token: access_token,
+      },
+    })
+
+    const longLivedAccessToken = longLivedTokenRes.data.access_token
+    const longLivedExpiresIn = longLivedTokenRes.data.expires_in
+
     const profileRes = await axios.get('https://graph.facebook.com/me', {
-      params: { access_token, fields: 'id,name' },
+      params: { access_token: longLivedAccessToken, fields: 'id,name' },
     })
 
     await Integration.findOneAndUpdate(
@@ -82,17 +97,39 @@ export const handleMetaOAuthCallback = async (req: Request, res: Response, next:
       {
         provider: 'meta',
         status: 'connected',
-        accessToken: access_token,
+        accessToken: longLivedAccessToken,
         externalAccountId: profileRes.data.id,
         externalAccountName: profileRes.data.name,
-        tokenExpiresAt: expires_in ? new Date(Date.now() + expires_in * 1000) : null,
+        tokenExpiresAt: longLivedExpiresIn ? new Date(Date.now() + longLivedExpiresIn * 1000) : null,
         connectedAt: new Date(),
         connectedBy: req.user!.id,
       },
       { upsert: true, new: true }
     )
 
+    // Automatically subscribe to leads for all accessible pages
+    try {
+      const results = await fetchAndSubscribeAllPages(longLivedAccessToken)
+      logger.info('Meta page subscriptions completed', { results })
+    } catch (err) {
+      logger.error('Failed to subscribe to Meta pages after OAuth', err)
+    }
+
     return res.redirect(`${process.env.FRONTEND_URL}/integrations?connected=meta`)
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const subscribeMetaPages = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const integration = await Integration.findOne({ provider: 'meta', status: 'connected' }).select('+accessToken')
+    if (!integration?.accessToken) {
+      return res.status(400).json({ success: false, message: 'Meta integration not connected' })
+    }
+
+    const results = await fetchAndSubscribeAllPages(integration.accessToken)
+    return res.status(200).json({ success: true, data: results })
   } catch (err) {
     next(err)
   }

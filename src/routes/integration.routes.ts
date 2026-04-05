@@ -6,6 +6,7 @@ import {
   disconnectIntegration,
   getMetaOAuthUrl,
   handleMetaOAuthCallback,
+  subscribeMetaPages,
   getGoogleAdsOAuthUrl,
   handleGoogleAdsOAuthCallback,
   getLinkedInOAuthUrl,
@@ -30,6 +31,7 @@ router.delete('/:id', [param('id').isMongoId()], validate, disconnectIntegration
 
 router.get('/meta/connect', getMetaOAuthUrl)
 router.get('/meta/callback', handleMetaOAuthCallback)
+router.post('/meta/subscribe', subscribeMetaPages)
 
 router.get('/google-ads/connect', getGoogleAdsOAuthUrl)
 router.get('/google-ads/callback', handleGoogleAdsOAuthCallback)
