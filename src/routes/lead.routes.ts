@@ -6,6 +6,7 @@ import {
   createLead,
   updateLead,
   deleteLead,
+  bulkUpdateLeads,
   bulkDeleteLeads,
   assignLead,
   updateDisposition,
@@ -33,12 +34,20 @@ router.use(authenticate)
 
 router.post('/import/preview', requireRole('manager', 'representative'), uploadImport, previewLeadImport)
 router.post('/import', requireRole('manager', 'representative'), uploadImport, importLeadsFromFile)
-router.post('/export', requireRole('manager', 'representative'), exportLeads)
-router.post('/bulk-delete', requireRole('manager', 'representative'), [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()], validate, bulkDeleteLeads)
+router.post('/export', requireManager, exportLeads)
+router.post('/bulk-delete', requireManager, [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()], validate, bulkDeleteLeads)
 router.get('/filters', getLeadFilters)
 router.post('/lookup-by-phone', [body('phones').isArray()], validate, lookupLeadsByPhones)
 
 router.get('/', getLeads)
+
+router.post(
+  '/bulk-update',
+  requireRole('manager', 'representative'),
+  [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()],
+  validate,
+  bulkUpdateLeads
+)
 
 router.get('/:id', [param('id').isMongoId()], validate, getLeadById)
 
@@ -56,7 +65,7 @@ router.post(
 
 router.put('/:id', [param('id').isMongoId()], validate, updateLead)
 
-router.delete('/:id', requireRole('manager', 'representative'), [param('id').isMongoId()], validate, deleteLead)
+router.delete('/:id', requireManager, [param('id').isMongoId()], validate, deleteLead)
 
 router.patch(
   '/:id/assign',

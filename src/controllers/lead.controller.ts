@@ -21,6 +21,15 @@ import { isValid, parse as parseDate, parseISO } from 'date-fns'
 const DISPOSITIONS = ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Failed']
 const FAILED_REASONS = ['Budget Issue', 'Not Interested', 'Location Issue', 'Timeline Issue', 'Competition', 'Other']
 const MEETING_TYPES = ['VC', 'Client Place']
+ type BulkLeadUpdatePayload = {
+   source?: string
+   disposition?: string
+   owner?: string | null
+   ownerName?: string | null
+   assignedAt?: Date | null
+   isInQueue?: boolean
+ }
+
 const IMPORT_EXTRA_FIELDS = ['source', 'disposition', 'notes', 'ownerName', 'nextFollowUp', 'receivedDate', 'meetingType', 'meetingLocation', 'failedReason'] as const
 type ImportExtraField = (typeof IMPORT_EXTRA_FIELDS)[number]
 type ImportTargetField = LeadFieldKey | ImportExtraField | 'skip'
@@ -302,6 +311,40 @@ const resolveSource = (value?: string | null): string => {
   return matchedSource || String(value).trim() || 'Manual'
 }
 
+const resolveBulkLeadOwner = async (
+  req: Request,
+  rawOwner: unknown
+): Promise<Pick<BulkLeadUpdatePayload, 'owner' | 'ownerName' | 'assignedAt' | 'isInQueue'>> => {
+  if (req.user!.role !== 'manager') {
+    throw new Error('Only managers can change lead assignment in bulk')
+  }
+
+  if (rawOwner === null || rawOwner === undefined || rawOwner === '' || rawOwner === 'unassigned') {
+    return {
+      owner: null,
+      ownerName: null,
+      assignedAt: null,
+      isInQueue: false,
+    }
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(String(rawOwner))) {
+    throw new Error('Representative not found')
+  }
+
+  const representative = await User.findOne({ _id: rawOwner, role: 'representative', isActive: true }).select('name')
+  if (!representative) {
+    throw new Error('Representative not found')
+  }
+
+  return {
+    owner: String(representative._id),
+    ownerName: representative.name,
+    assignedAt: new Date(),
+    isInQueue: false,
+  }
+}
+
 const suggestImportField = (
   header: string,
   availableFields: LeadFieldDefinition[]
@@ -564,6 +607,33 @@ const canAccessLead = (req: Request, lead: any): boolean => {
   return Boolean(lead.owner && String(lead.owner) === String(req.user!.id))
 }
 
+const applyBulkLeadUpdate = (
+  lead: any,
+  payload: BulkLeadUpdatePayload,
+  options: { dispositionNote?: string; req: Request }
+) => {
+  if (payload.source !== undefined) {
+    lead.source = payload.source
+  }
+
+  if (payload.owner !== undefined) {
+    lead.owner = payload.owner ? new mongoose.Types.ObjectId(payload.owner) : null
+    lead.ownerName = payload.ownerName ?? null
+    lead.assignedAt = payload.assignedAt ?? null
+    lead.isInQueue = payload.isInQueue ?? false
+  }
+
+  if (payload.disposition !== undefined) {
+    lead.disposition = payload.disposition
+    lead.lastActivity = new Date()
+    lead.lastActivityNote = options.dispositionNote || null
+    lead.notes = options.dispositionNote || null
+    if (options.dispositionNote) {
+      lead.statusNotes = [...(lead.statusNotes || []), buildStatusNote(payload.disposition, options.dispositionNote, options.req)]
+    }
+  }
+}
+
 const deleteLeadDependencies = async (leadIds: mongoose.Types.ObjectId[]) => {
   if (!leadIds.length) return
 
@@ -624,6 +694,116 @@ export const previewLeadImport = async (req: Request, res: Response, next: NextF
         dispositions: DISPOSITIONS,
         cities: settings?.cities || [],
         representativePreview,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const requestedIds: string[] = Array.isArray(req.body?.ids)
+      ? Array.from(new Set<string>(req.body.ids.map((id: unknown) => String(id)).filter(Boolean)))
+      : []
+
+    if (!requestedIds.length) {
+      return res.status(400).json({ success: false, message: 'Select at least one lead to update' })
+    }
+
+    const bulkPayload: BulkLeadUpdatePayload = {}
+    const nextDisposition = req.body?.disposition && DISPOSITIONS.includes(req.body.disposition)
+      ? req.body.disposition
+      : undefined
+    const nextSource = typeof req.body?.source === 'string' && req.body.source.trim()
+      ? resolveSource(req.body.source)
+      : undefined
+    const rawOwner = req.body?.owner
+    const dispositionNote = typeof req.body?.statusNote === 'string' ? req.body.statusNote.trim() : ''
+
+    if (nextSource) {
+      bulkPayload.source = nextSource
+    }
+
+    if (nextDisposition) {
+      if (!dispositionNote) {
+        return res.status(400).json({ success: false, message: 'A note is required whenever you change the lead status' })
+      }
+      bulkPayload.disposition = nextDisposition
+    }
+
+    if (rawOwner !== undefined) {
+      try {
+        Object.assign(bulkPayload, await resolveBulkLeadOwner(req, rawOwner))
+      } catch (error: any) {
+        const message = error instanceof Error ? error.message : 'Failed to resolve representative'
+        const statusCode = message === 'Representative not found' ? 404 : 403
+        return res.status(statusCode).json({ success: false, message })
+      }
+    }
+
+    if (!Object.keys(bulkPayload).length) {
+      return res.status(400).json({ success: false, message: 'Choose at least one bulk edit action' })
+    }
+
+    const leads = await Lead.find({ _id: { $in: requestedIds } })
+    const accessibleLeads = leads.filter((lead) => canAccessLead(req, lead))
+    const skippedIds = requestedIds.filter((id) => !accessibleLeads.some((lead) => String(lead._id) === id))
+
+    if (!accessibleLeads.length) {
+      return res.status(403).json({ success: false, message: 'You do not have access to update the selected leads' })
+    }
+
+    const updatedIds: string[] = []
+    const auditEntries: Array<Record<string, unknown>> = []
+
+    for (const lead of accessibleLeads) {
+      const before = lead.toObject()
+      applyBulkLeadUpdate(lead, bulkPayload, { dispositionNote, req })
+      await lead.save()
+      updatedIds.push(String(lead._id))
+      auditEntries.push({
+        actor: req.user!.id,
+        actorName: req.user!.name,
+        actorRole: req.user!.role,
+        action: 'lead.bulk_updated',
+        entity: 'Lead',
+        entityId: String(lead._id),
+        before,
+        after: lead.toObject(),
+      })
+    }
+
+    if (bulkPayload.owner !== undefined) {
+      await QueueItem.deleteMany({ leadId: { $in: accessibleLeads.map((lead) => lead._id) } })
+      emitToTeam('all', 'lead:assigned', {
+        leadIds: updatedIds,
+        assignedTo: bulkPayload.owner || null,
+        assignedToName: bulkPayload.ownerName || null,
+      })
+    } else {
+      emitToTeam('all', 'lead:incoming', {
+        updated: {
+          leadIds: updatedIds,
+        },
+      })
+    }
+
+    if (auditEntries.length) {
+      await AuditLog.insertMany(auditEntries)
+    }
+
+    return res.status(200).json({
+      success: true,
+      message:
+        updatedIds.length === 1
+          ? '1 lead updated successfully'
+          : `${updatedIds.length} leads updated successfully`,
+      data: {
+        updatedIds,
+        updatedCount: updatedIds.length,
+        skippedIds,
+        skippedCount: skippedIds.length,
       },
     })
   } catch (err) {
@@ -1228,6 +1408,7 @@ export const createLead = async (req: Request, res: Response, next: NextFunction
   try {
     const initialNote = typeof req.body.notes === 'string' ? req.body.notes.trim() : ''
     const initialDisposition = req.body.disposition && DISPOSITIONS.includes(req.body.disposition) ? req.body.disposition : 'New'
+    const resolvedSource = resolveSource(req.body.source)
     const normalizedPhone = normalizePhone(req.body.phone)
 
     if (normalizedPhone) {
@@ -1254,7 +1435,7 @@ export const createLead = async (req: Request, res: Response, next: NextFunction
     const isRepresentativeCreator = req.user!.role === 'representative'
     const payload = {
       ...req.body,
-      source: 'Manual',
+      source: resolvedSource,
       owner: isRepresentativeCreator ? req.user!.id : null,
       ownerName: isRepresentativeCreator ? req.user!.name : null,
       disposition: initialDisposition,
@@ -1338,6 +1519,10 @@ export const updateLead = async (req: Request, res: Response, next: NextFunction
 
 export const deleteLead = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (req.user!.role !== 'manager') {
+      return res.status(403).json({ success: false, message: 'Only managers can delete leads' })
+    }
+
     const lead = await Lead.findById(req.params.id)
     if (!lead) {
       return res.status(404).json({ success: false, message: 'Lead not found' })
@@ -1373,6 +1558,10 @@ export const deleteLead = async (req: Request, res: Response, next: NextFunction
 
 export const bulkDeleteLeads = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (req.user!.role !== 'manager') {
+      return res.status(403).json({ success: false, message: 'Only managers can delete leads' })
+    }
+
     const requestedIds: string[] = Array.isArray(req.body?.ids)
       ? Array.from(new Set<string>(req.body.ids.map((id: unknown) => String(id)).filter(Boolean)))
       : []
@@ -1713,7 +1902,11 @@ const EXPORTABLE_FIELDS = [
 
 export const exportLeads = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { dateRange, fields, format = 'csv' } = req.body
+    if (req.user!.role !== 'manager') {
+      return res.status(403).json({ success: false, message: 'Only managers can export leads' })
+    }
+
+    const { dateRange, fields, format = 'csv', owner } = req.body
     
     // Validate date range
     const validDateRanges = ['today', 'week', 'month', 'lifetime']
@@ -1745,14 +1938,14 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
 
     // Build query
     const query: any = {}
-    
-    // Apply access control
-    if (req.user!.role === 'representative') {
-      query.$or = [
-        { owner: new mongoose.Types.ObjectId(req.user!.id) },
-        { owner: null },
-        { owner: { $exists: false } },
-      ]
+
+    if (owner === 'unassigned') {
+      query.owner = null
+    } else if (owner) {
+      if (!mongoose.Types.ObjectId.isValid(String(owner))) {
+        return res.status(400).json({ success: false, message: 'Invalid representative filter' })
+      }
+      query.owner = new mongoose.Types.ObjectId(owner)
     }
 
     // Apply date filter
