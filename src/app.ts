@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import morgan from 'morgan'
-import { FRONTEND_URL, NODE_ENV } from './config/constants'
+import { CORS_ALLOWED_ORIGINS, NODE_ENV } from './config/constants'
 import { globalRateLimiter } from './middleware/rateLimiter.middleware'
 import { errorHandler, notFound } from './middleware/errorHandler.middleware'
 
@@ -20,9 +20,21 @@ import integrationRoutes from './routes/integration.routes'
 import performanceRoutes from './routes/performance.routes'
 
 const app = express()
+const allowedOrigins = new Set(CORS_ALLOWED_ORIGINS)
 
 app.use(helmet())
-app.use(cors({ origin: FRONTEND_URL, credentials: true }))
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.has(origin)) {
+        return callback(null, true)
+      }
+
+      return callback(new Error('Not allowed by CORS'))
+    },
+    credentials: true,
+  })
+)
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
