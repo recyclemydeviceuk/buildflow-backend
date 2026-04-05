@@ -432,6 +432,249 @@ export const getRepresentativeDashboard = async (req: Request, res: Response, ne
   }
 }
 
+export const getManagerDashboard = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    await refreshReminderStatuses()
+
+    const now = new Date()
+    const todayStart = startOfDay(now)
+    const todayEnd = endOfDay(now)
+    const weekStart = startOfWeek(now)
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999)
+
+    // Build 7-day buckets for call trend
+    const sevenDaysAgo = new Date(todayStart)
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6)
+
+    const [
+      totalLeads,
+      newLeadsToday,
+      newLeadsThisMonth,
+      newLeadsLastMonth,
+      qualifiedLeads,
+      wonLeads,
+      failedLeads,
+      totalCalls,
+      connectedCalls,
+      callsToday,
+      connectedToday,
+      pipelineFunnel,
+      sourceBreakdown,
+      callTrend,
+      repLeadStats,
+      repCallStats,
+      repReminderStats,
+      representatives,
+      overdueRemindersTotal,
+      recentLeads,
+      settings,
+    ] = await Promise.all([
+      Lead.countDocuments({}),
+      Lead.countDocuments({ createdAt: { $gte: todayStart, $lte: todayEnd } }),
+      Lead.countDocuments({ createdAt: { $gte: monthStart } }),
+      Lead.countDocuments({ createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd } }),
+      Lead.countDocuments({ disposition: 'Qualified' }),
+      Lead.countDocuments({ disposition: 'Agreement Done' }),
+      Lead.countDocuments({ disposition: 'Failed' }),
+      Call.countDocuments({}),
+      Call.countDocuments({ outcome: 'Connected' }),
+      Call.countDocuments({
+        $or: [
+          { startedAt: { $gte: todayStart, $lte: todayEnd } },
+          { startedAt: null, createdAt: { $gte: todayStart, $lte: todayEnd } },
+        ],
+      }),
+      Call.countDocuments({
+        outcome: 'Connected',
+        $or: [
+          { startedAt: { $gte: todayStart, $lte: todayEnd } },
+          { startedAt: null, createdAt: { $gte: todayStart, $lte: todayEnd } },
+        ],
+      }),
+      Lead.aggregate([
+        { $group: { _id: '$disposition', count: { $sum: 1 } } },
+      ]),
+      Lead.aggregate([
+        { $group: { _id: '$source', count: { $sum: 1 }, won: { $sum: { $cond: [{ $eq: ['$disposition', 'Agreement Done'] }, 1, 0] } } } },
+        { $sort: { count: -1 } },
+        { $limit: 6 },
+      ]),
+      Call.aggregate([
+        { $match: { $or: [{ startedAt: { $gte: sevenDaysAgo } }, { startedAt: null, createdAt: { $gte: sevenDaysAgo } }] } as any },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: { $ifNull: ['$startedAt', '$createdAt'] },
+              },
+            },
+            total: { $sum: 1 },
+            connected: { $sum: { $cond: [{ $eq: ['$outcome', 'Connected'] }, 1, 0] } },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+      Lead.aggregate([
+        { $match: { owner: { $ne: null } } },
+        {
+          $group: {
+            _id: '$owner',
+            leadsAssigned: { $sum: 1 },
+            leadsContacted: { $sum: { $cond: [{ $ne: ['$disposition', 'New'] }, 1, 0] } },
+            qualifiedThisWeek: { $sum: { $cond: [{ $and: [{ $eq: ['$disposition', 'Qualified'] }, { $gte: ['$updatedAt', weekStart] }] }, 1, 0] } },
+            wonLeads: { $sum: { $cond: [{ $eq: ['$disposition', 'Agreement Done'] }, 1, 0] } },
+          },
+        },
+      ]),
+      Call.aggregate([
+        {
+          $group: {
+            _id: '$representative',
+            callsTotal: { $sum: 1 },
+            connectedTotal: { $sum: { $cond: [{ $eq: ['$outcome', 'Connected'] }, 1, 0] } },
+            callsToday: {
+              $sum: {
+                $cond: [
+                  {
+                    $or: [
+                      { $and: [{ $gte: ['$startedAt', todayStart] }, { $lte: ['$startedAt', todayEnd] }] },
+                      { $and: [{ $eq: ['$startedAt', null] }, { $gte: ['$createdAt', todayStart] }, { $lte: ['$createdAt', todayEnd] }] },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            avgDuration: { $avg: '$duration' },
+          },
+        },
+      ]),
+      Reminder.aggregate([
+        { $match: { status: { $ne: 'completed' } } },
+        {
+          $group: {
+            _id: '$owner',
+            overdue: { $sum: { $cond: [{ $eq: ['$status', 'overdue'] }, 1, 0] } },
+            dueSoon: { $sum: { $cond: [{ $eq: ['$status', 'due_soon'] }, 1, 0] } },
+          },
+        },
+      ]),
+      User.find({ role: 'representative', isActive: true }).select('name phone avatarUrl').lean(),
+      Reminder.countDocuments({ status: 'overdue' }),
+      Lead.find({}).sort({ createdAt: -1 }).limit(8).lean(),
+      Settings.findOne().lean(),
+    ])
+
+    // Build the 7-day trend array (fill missing days with 0)
+    const trendMap = new Map(callTrend.map((d: any) => [d._id, d]))
+    const callTrendDays = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(sevenDaysAgo)
+      d.setDate(d.getDate() + i)
+      const key = d.toISOString().slice(0, 10)
+      const entry = trendMap.get(key) as any
+      return {
+        date: key,
+        label: d.toLocaleDateString('en-US', { weekday: 'short' }),
+        total: entry?.total || 0,
+        connected: entry?.connected || 0,
+      }
+    })
+
+    // Build funnel
+    const funnelOrder = ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done']
+    const funnelMap = new Map(pipelineFunnel.map((d: any) => [d._id, d.count]))
+    const funnel = funnelOrder.map((stage) => ({ stage, count: (funnelMap.get(stage) || 0) as number }))
+
+    // Build rep leaderboard
+    const leadMap = new Map(repLeadStats.map((r: any) => [String(r._id), r]))
+    const callMap = new Map(repCallStats.map((r: any) => [String(r._id), r]))
+    const reminderMap = new Map(repReminderStats.map((r: any) => [String(r._id), r]))
+    const callsTarget = 20
+
+    const repLeaderboard = representatives
+      .map((rep) => {
+        const ls = leadMap.get(String(rep._id)) as any
+        const cs = callMap.get(String(rep._id)) as any
+        const rs = reminderMap.get(String(rep._id)) as any
+        const callsToday = Number(cs?.callsToday || 0)
+        const connectedCallsToday = Number(cs?.connectedTotal || 0)
+        const leadsAssigned = Number(ls?.leadsAssigned || 0)
+        const leadsContacted = Number(ls?.leadsContacted || 0)
+        const qualifiedThisWeek = Number(ls?.qualifiedThisWeek || 0)
+        const overdueReminders = Number(rs?.overdue || 0)
+        const wonLeadsRep = Number(ls?.wonLeads || 0)
+        const score = computeRepScore({ callsToday, callsTarget, leadsAssigned, leadsContacted, qualifiedThisWeek, overdueReminders })
+        return {
+          id: String(rep._id),
+          name: rep.name,
+          phone: rep.phone || '',
+          avatarUrl: rep.avatarUrl || null,
+          callsToday,
+          connectedCallsToday,
+          leadsAssigned,
+          leadsContacted,
+          qualifiedThisWeek,
+          wonLeads: wonLeadsRep,
+          overdueReminders,
+          avgDuration: Math.floor(Number(cs?.avgDuration || 0)),
+          score,
+        }
+      })
+      .sort((a, b) => b.score - a.score || b.callsToday - a.callsToday || a.name.localeCompare(b.name))
+      .map((entry, index) => ({ ...entry, rank: index + 1 }))
+
+    const conversionRate = totalLeads > 0 ? +((wonLeads / totalLeads) * 100).toFixed(1) : 0
+    const callConnectRate = totalCalls > 0 ? +((connectedCalls / totalCalls) * 100).toFixed(1) : 0
+    const todayConnectRate = callsToday > 0 ? +((connectedToday / callsToday) * 100).toFixed(1) : 0
+    const monthGrowth = lastMonthStart && newLeadsLastMonth > 0
+      ? +(((newLeadsThisMonth - newLeadsLastMonth) / newLeadsLastMonth) * 100).toFixed(1)
+      : 0
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        kpis: {
+          totalLeads,
+          newLeadsToday,
+          newLeadsThisMonth,
+          monthGrowth,
+          qualifiedLeads,
+          wonLeads,
+          failedLeads,
+          totalCalls,
+          connectedCalls,
+          callsToday,
+          connectedToday,
+          conversionRate,
+          callConnectRate,
+          todayConnectRate,
+          overdueRemindersTotal,
+          totalReps: representatives.length,
+        },
+        funnel,
+        callTrend: callTrendDays,
+        sourceBreakdown: sourceBreakdown.map((s: any) => ({
+          source: s._id || 'Unknown',
+          count: s.count,
+          won: s.won,
+        })),
+        repLeaderboard,
+        recentLeads,
+        manualAssignmentEnabled: normalizeFeatureControls(
+          settings?.featureControls,
+          settings?.leadRouting?.mode
+        ).manualAssignment,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
 export const getKPIs = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { dateFrom, dateTo } = req.query as Record<string, string>

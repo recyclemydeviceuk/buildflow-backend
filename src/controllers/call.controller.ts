@@ -6,7 +6,7 @@ import { Reminder } from '../models/Reminder'
 import { Settings } from '../models/Settings'
 import { User } from '../models/User'
 import { exotelConfig } from '../config/exotel'
-import { emitUserAvailabilityUpdate } from '../config/socket'
+import { emitUserAvailabilityUpdate, type UserAvailabilityPayload } from '../config/socket'
 import { DISPOSITIONS } from '../config/constants'
 import { syncExotelCallHistory } from '../services/callSync.service'
 import { ExotelManagedCallError, getManagedCallDetails, initiateManagedCall } from '../services/exotel.service'
@@ -283,6 +283,88 @@ const ensureLeadForDialerPhone = async (params: {
 const getCallAccessFilter = (req: Request): Record<string, unknown> =>
   req.user!.role === 'representative' ? { representative: req.user!.id } : {}
 
+const emitRepresentativeAvailability = (representative: {
+  _id: unknown
+  name: string
+  role: UserAvailabilityPayload['role']
+  phone?: string | null
+  callAvailabilityStatus?: UserAvailabilityPayload['callAvailabilityStatus']
+  callDeviceMode?: UserAvailabilityPayload['callDeviceMode'] | null
+  activeCallSid?: string | null
+  isActive?: boolean | null
+}) => {
+  const payload: UserAvailabilityPayload = {
+    id: String(representative._id),
+    name: representative.name,
+    role: representative.role,
+    phone: representative.phone ?? null,
+    callAvailabilityStatus: representative.callAvailabilityStatus ?? 'available',
+    callDeviceMode: representative.callDeviceMode ?? 'phone',
+    activeCallSid: representative.activeCallSid ?? null,
+    isActive: representative.isActive ?? true,
+  }
+
+  emitUserAvailabilityUpdate(payload)
+}
+
+const reconcileRepresentativeCallState = async (representative: any) => {
+  const openStatuses = ['initiated', 'ringing', 'in-progress']
+  const openCall =
+    (representative.activeCallSid
+      ? await Call.findOne({
+          exotelCallSid: representative.activeCallSid,
+          representative: representative._id,
+          status: { $in: openStatuses },
+        })
+          .select('exotelCallSid status')
+          .lean()
+      : null) ||
+    (await Call.findOne({
+      representative: representative._id,
+      status: { $in: openStatuses },
+    })
+      .sort({ updatedAt: -1, startedAt: -1 })
+      .select('exotelCallSid status')
+      .lean())
+
+  let shouldSave = false
+
+  if (openCall) {
+    const nextAvailability = openCall.status === 'in-progress' ? 'in-call' : 'available'
+    const nextActiveCallSid = openCall.exotelCallSid || null
+
+    if (representative.callAvailabilityStatus !== nextAvailability) {
+      representative.callAvailabilityStatus = nextAvailability
+      shouldSave = true
+    }
+
+    if ((representative.activeCallSid || null) !== nextActiveCallSid) {
+      representative.activeCallSid = nextActiveCallSid
+      shouldSave = true
+    }
+  } else {
+    if (representative.activeCallSid) {
+      representative.activeCallSid = null
+      shouldSave = true
+    }
+
+    if (
+      representative.callAvailabilityStatus !== 'offline' &&
+      representative.callAvailabilityStatus !== 'available'
+    ) {
+      representative.callAvailabilityStatus = 'available'
+      shouldSave = true
+    }
+  }
+
+  if (shouldSave) {
+    await representative.save()
+    emitRepresentativeAvailability(representative)
+  }
+
+  return openCall
+}
+
 export const initiateCall = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { leadId, phone, leadName, city, agentPhone, representativeId, recordCall } = req.body
@@ -314,6 +396,10 @@ export const initiateCall = async (req: Request, res: Response, next: NextFuncti
 
     if (representative.callAvailabilityStatus === 'offline') {
       return res.status(409).json({ success: false, message: 'Selected representative is offline for calls' })
+    }
+
+    if (representative.callAvailabilityStatus === 'in-call' || representative.activeCallSid) {
+      await reconcileRepresentativeCallState(representative)
     }
 
     if (representative.callAvailabilityStatus === 'in-call' || representative.activeCallSid) {
@@ -417,8 +503,8 @@ export const initiateCall = async (req: Request, res: Response, next: NextFuncti
       }),
     ])
 
-    emitUserAvailabilityUpdate({
-      id: String(representative._id),
+    emitRepresentativeAvailability({
+      _id: representative._id,
       name: representative.name,
       role: representative.role,
       phone: representative.phone || null,

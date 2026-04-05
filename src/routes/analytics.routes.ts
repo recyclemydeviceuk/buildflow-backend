@@ -2,6 +2,7 @@ import { Router } from 'express'
 import {
   getRepresentativePerformanceDashboard,
   getRepresentativeDashboard,
+  getManagerDashboard,
   getKPIs,
   getSourcePerformance,
   getUtmPerformance,
@@ -20,6 +21,7 @@ router.get('/rep-performance-dashboard', getRepresentativePerformanceDashboard)
 
 router.use(requireManager)
 
+router.get('/manager-dashboard', getManagerDashboard)
 router.get('/kpis', getKPIs)
 router.get('/source-performance', getSourcePerformance)
 router.get('/utm-performance', getUtmPerformance)

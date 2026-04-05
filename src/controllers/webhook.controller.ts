@@ -8,9 +8,8 @@ import { processWebsiteLead } from '../webhooks/website.webhook'
 import { ExotelCallStatusPayload, ExotelSMSStatusCallbackPayload, ExoVoiceAnalyzeWebhookPayload } from '../types/exotel.types'
 
 const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
-  const fields = payload?.fields && typeof payload.fields === 'object' ? payload.fields : {}
-  const fieldEntries = Object.entries(fields).map(([key, value]) => {
-    if (value && typeof value === 'object') {
+  const normalizeFieldEntry = (key: string, value: unknown) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
       return {
         key,
         label: String((value as any).title || (value as any).label || key).toLowerCase(),
@@ -21,9 +20,44 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     return {
       key,
       label: String(key).toLowerCase(),
-      value: String(value || '').trim(),
+      value: String(Array.isArray(value) ? value.join(', ') : value || '').trim(),
     }
-  })
+  }
+
+  const nestedFields = Array.isArray(payload?.fields)
+    ? payload.fields.map((field, index) =>
+        normalizeFieldEntry(String(field?.id || field?.custom_id || field?.title || field?.label || index), field)
+      )
+    : payload?.fields && typeof payload.fields === 'object'
+      ? Object.entries(payload.fields).map(([key, value]) => normalizeFieldEntry(key, value))
+      : []
+
+  const reservedTopLevelKeys = new Set([
+    'fields',
+    'token',
+    'name',
+    'phone',
+    'email',
+    'city',
+    'campaign',
+    'budget',
+    'message',
+    'form_name',
+    'formName',
+    'form',
+    'utmSource',
+    'utm_source',
+    'utmMedium',
+    'utm_medium',
+    'utmCampaign',
+    'utm_campaign',
+  ])
+
+  const topLevelFields = Object.entries(payload)
+    .filter(([key]) => !reservedTopLevelKeys.has(key))
+    .map(([key, value]) => normalizeFieldEntry(key, value))
+
+  const fieldEntries = [...nestedFields, ...topLevelFields]
 
   const findField = (...names: string[]) => {
     const normalizedNames = names.map((name) => name.toLowerCase())
@@ -43,7 +77,7 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     city: String(payload.city || findField('city', 'location')).trim() || undefined,
     campaign:
       String(payload.campaign || findField('campaign', 'campaign_name')).trim() ||
-      String(payload.form_name || payload.formName || '').trim() ||
+      String(payload.form?.name || payload.form_name || payload.formName || '').trim() ||
       undefined,
     budget: String(payload.budget || findField('budget')).trim() || undefined,
     message: String(payload.message || findField('message', 'notes', 'requirements')).trim() || undefined,
@@ -77,6 +111,13 @@ export const handleExotelSmsStatus = async (req: Request, res: Response, next: N
 
 export const handleWebsiteLead = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const configuredToken = process.env.WEBSITE_LEAD_WEBHOOK_TOKEN
+    const providedToken = String(req.query.token || req.get('x-webhook-token') || req.body?.token || '').trim()
+
+    if (configuredToken && providedToken !== configuredToken) {
+      return res.status(401).json({ success: false, message: 'Invalid webhook token' })
+    }
+
     const parsedPayload = parseWebsiteLeadPayload(req.body as Record<string, any>)
     const { name, phone } = parsedPayload
 
