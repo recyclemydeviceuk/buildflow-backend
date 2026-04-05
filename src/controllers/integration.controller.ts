@@ -2,12 +2,23 @@ import { Request, Response, NextFunction } from 'express'
 import { Integration } from '../models/Integration'
 import { getGoogleAdsAuthUrl, exchangeGoogleAdsCode, getGoogleAdsUserInfo, saveGoogleAdsIntegration, fetchGoogleAdsLeadForms, fetchGoogleAdsLeads } from '../services/googleAds.service'
 import { getLinkedInAuthUrl, exchangeLinkedInCode, getLinkedInUserInfo, saveLinkedInIntegration, fetchLinkedInLeadGenForms, fetchLinkedInLeads } from '../services/linkedin.service'
-import { fetchAndSubscribeAllPages } from '../services/meta.service'
+import {
+  createMetaOAuthState,
+  verifyMetaOAuthState,
+  exchangeMetaCodeForToken,
+  fetchMetaUserProfile,
+  fetchAndSubscribeAllPages,
+  fetchMetaLeadForms,
+  fetchAllMetaLeads,
+} from '../services/meta.service'
 import { Lead } from '../models/Lead'
 import { emitToTeam } from '../config/socket'
 import axios from 'axios'
 import { notifyNewLeadCreated } from '../services/notification.service'
-import { logger } from '../utils/logger'
+import { upsertMetaLeadPayload } from '../webhooks/meta.webhook'
+
+const getMetaIntegration = () =>
+  Integration.findOne({ provider: 'meta', status: 'connected' }).select('+accessToken +appSecret')
 
 export const getIntegrations = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -53,67 +64,50 @@ export const disconnectIntegration = async (req: Request, res: Response, next: N
   }
 }
 
-export const getMetaOAuthUrl = (_req: Request, res: Response) => {
+export const getMetaOAuthUrl = (req: Request, res: Response) => {
   const { META_APP_ID, APP_BASE_URL } = process.env
   const redirectUri = `${APP_BASE_URL}/api/integrations/meta/callback`
-  const scopes = 'leads_retrieval,pages_read_engagement,pages_manage_metadata,pages_show_list'
+  const scopes = 'leads_retrieval,pages_read_engagement,pages_manage_metadata'
+  const state = createMetaOAuthState(req.user!.id)
 
-  const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code`
+  const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${META_APP_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scopes}&response_type=code&state=${encodeURIComponent(state)}`
 
   return res.status(200).json({ success: true, data: { url } })
 }
 
 export const handleMetaOAuthCallback = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { code } = req.query as Record<string, string>
-    const { META_APP_ID, META_APP_SECRET, APP_BASE_URL } = process.env
+    const { code, state } = req.query as Record<string, string>
+    const { META_APP_SECRET, APP_BASE_URL } = process.env
     const redirectUri = `${APP_BASE_URL}/api/integrations/meta/callback`
 
-    const tokenRes = await axios.get('https://graph.facebook.com/v19.0/oauth/access_token', {
-      params: { client_id: META_APP_ID, client_secret: META_APP_SECRET, redirect_uri: redirectUri, code },
-    })
+    if (!code || !state) {
+      return res.redirect(`${process.env.FRONTEND_URL}/integrations?error=meta&message=missing_code_or_state`)
+    }
 
-    const { access_token, expires_in } = tokenRes.data
+    const statePayload = verifyMetaOAuthState(state)
+    if (!statePayload) {
+      return res.redirect(`${process.env.FRONTEND_URL}/integrations?error=meta&message=invalid_state`)
+    }
 
-    // Exchange short-lived token for long-lived token
-    const longLivedTokenRes = await axios.get('https://graph.facebook.com/v19.0/oauth/access_token', {
-      params: {
-        grant_type: 'fb_exchange_token',
-        client_id: META_APP_ID,
-        client_secret: META_APP_SECRET,
-        fb_exchange_token: access_token,
-      },
-    })
-
-    const longLivedAccessToken = longLivedTokenRes.data.access_token
-    const longLivedExpiresIn = longLivedTokenRes.data.expires_in
-
-    const profileRes = await axios.get('https://graph.facebook.com/me', {
-      params: { access_token: longLivedAccessToken, fields: 'id,name' },
-    })
+    const { accessToken, expiresAt } = await exchangeMetaCodeForToken(code, redirectUri)
+    const profile = await fetchMetaUserProfile(accessToken, META_APP_SECRET)
 
     await Integration.findOneAndUpdate(
       { provider: 'meta' },
       {
         provider: 'meta',
         status: 'connected',
-        accessToken: longLivedAccessToken,
-        externalAccountId: profileRes.data.id,
-        externalAccountName: profileRes.data.name,
-        tokenExpiresAt: longLivedExpiresIn ? new Date(Date.now() + longLivedExpiresIn * 1000) : null,
+        accessToken,
+        appSecret: META_APP_SECRET || null,
+        externalAccountId: profile.id,
+        externalAccountName: profile.name,
+        tokenExpiresAt: expiresAt,
         connectedAt: new Date(),
-        connectedBy: req.user!.id,
+        connectedBy: statePayload.userId,
       },
       { upsert: true, new: true }
     )
-
-    // Automatically subscribe to leads for all accessible pages
-    try {
-      const results = await fetchAndSubscribeAllPages(longLivedAccessToken)
-      logger.info('Meta page subscriptions completed', { results })
-    } catch (err) {
-      logger.error('Failed to subscribe to Meta pages after OAuth', err)
-    }
 
     return res.redirect(`${process.env.FRONTEND_URL}/integrations?connected=meta`)
   } catch (err) {
@@ -121,15 +115,111 @@ export const handleMetaOAuthCallback = async (req: Request, res: Response, next:
   }
 }
 
-export const subscribeMetaPages = async (req: Request, res: Response, next: NextFunction) => {
+export const subscribeMetaPages = async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const integration = await Integration.findOne({ provider: 'meta', status: 'connected' }).select('+accessToken')
+    const integration = await getMetaIntegration()
     if (!integration?.accessToken) {
-      return res.status(400).json({ success: false, message: 'Meta integration not connected' })
+      return res.status(400).json({ success: false, message: 'Meta integration is not connected' })
     }
 
-    const results = await fetchAndSubscribeAllPages(integration.accessToken)
-    return res.status(200).json({ success: true, data: results })
+    const appSecret = integration.appSecret || process.env.META_APP_SECRET || undefined
+    const subscriptions = await fetchAndSubscribeAllPages(integration.accessToken, appSecret)
+    const metaContext = await fetchMetaLeadForms(integration.accessToken, appSecret)
+
+    integration.metadata = {
+      ...(integration.metadata || {}),
+      pages: metaContext.pages,
+      forms: metaContext.forms,
+      subscriptions,
+      lastSyncedAt: new Date().toISOString(),
+    }
+    await integration.save()
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        subscriptions,
+        pages: metaContext.pages,
+        forms: metaContext.forms,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const getMetaLeadForms = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const integration = await getMetaIntegration()
+    if (!integration?.accessToken) {
+      return res.status(400).json({ success: false, message: 'Meta integration is not connected' })
+    }
+
+    const appSecret = integration.appSecret || process.env.META_APP_SECRET || undefined
+    const metaContext = await fetchMetaLeadForms(integration.accessToken, appSecret)
+
+    return res.status(200).json({ success: true, data: metaContext })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const fetchMetaLeadsToCRM = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const integration = await getMetaIntegration()
+    if (!integration?.accessToken) {
+      return res.status(400).json({ success: false, message: 'Meta integration is not connected' })
+    }
+
+    const { formId, sinceDays } = req.query as Record<string, string>
+    const appSecret = integration.appSecret || process.env.META_APP_SECRET || undefined
+    const leadResponse = await fetchAllMetaLeads(integration.accessToken, appSecret, {
+      formId: formId || undefined,
+      sinceDays: sinceDays ? parseInt(sinceDays, 10) : undefined,
+    })
+
+    let importedCount = 0
+    let createdCount = 0
+    let skippedCount = 0
+
+    for (const lead of leadResponse.leads) {
+      const result = await upsertMetaLeadPayload(lead, lead.form_id)
+      if (result.imported) {
+        importedCount += 1
+      } else {
+        skippedCount += 1
+      }
+
+      if (result.created) {
+        createdCount += 1
+      }
+    }
+
+    integration.metadata = {
+      ...(integration.metadata || {}),
+      pages: leadResponse.pages,
+      forms: leadResponse.forms,
+      lastLeadImportAt: new Date().toISOString(),
+      lastLeadImportSummary: {
+        totalLeads: leadResponse.leads.length,
+        importedCount,
+        createdCount,
+        skippedCount,
+      },
+    }
+    await integration.save()
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        pages: leadResponse.pages,
+        forms: leadResponse.forms,
+        totalLeads: leadResponse.leads.length,
+        importedCount,
+        createdCount,
+        skippedCount,
+      },
+    })
   } catch (err) {
     next(err)
   }

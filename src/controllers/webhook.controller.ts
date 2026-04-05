@@ -4,6 +4,7 @@ import { processExotelCallStatus } from '../webhooks/exotel.webhook'
 import { processExoVoiceAnalyzeResult } from '../webhooks/exotelAnalyze.webhook'
 import { processExotelSmsStatus } from '../webhooks/exotelSms.webhook'
 import { processMetaLeadgen } from '../webhooks/meta.webhook'
+import { verifyMetaWebhookSignature } from '../services/meta.service'
 import { processWebsiteLead } from '../webhooks/website.webhook'
 import { ExotelCallStatusPayload, ExotelSMSStatusCallbackPayload, ExoVoiceAnalyzeWebhookPayload } from '../types/exotel.types'
 
@@ -134,6 +135,13 @@ export const handleWebsiteLead = async (req: Request, res: Response, next: NextF
 
 export const handleMetaLeadWebhook = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const signature = req.get('x-hub-signature-256') || undefined
+    const isValidSignature = verifyMetaWebhookSignature(req.rawBody, signature, process.env.META_APP_SECRET)
+
+    if (!isValidSignature) {
+      return res.status(401).json({ success: false, message: 'Invalid Meta webhook signature' })
+    }
+
     const { object, entry } = req.body
 
     if (object !== 'page') {

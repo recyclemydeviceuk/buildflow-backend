@@ -13,6 +13,7 @@ declare global {
         callDeviceMode?: 'phone' | 'web'
         activeCallSid?: string | null
       }
+      rawBody?: Buffer
     }
   }
 }

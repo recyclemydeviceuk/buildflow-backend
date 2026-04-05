@@ -21,6 +21,11 @@ import performanceRoutes from './routes/performance.routes'
 
 const app = express()
 const allowedOrigins = new Set(CORS_ALLOWED_ORIGINS)
+const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
+  if (buf.length > 0) {
+    req.rawBody = Buffer.from(buf)
+  }
+}
 
 app.use(helmet())
 app.use(
@@ -35,7 +40,7 @@ app.use(
     credentials: true,
   })
 )
-app.use(express.json())
+app.use(express.json({ verify: captureRawBody }))
 app.use(express.urlencoded({ extended: true }))
 
 if (NODE_ENV !== 'test') {
