@@ -126,7 +126,7 @@ export const handleWebsiteLead = async (req: Request, res: Response, next: NextF
     }
 
     await processWebsiteLead(parsedPayload)
-    return res.status(201).json({ success: true })
+    return res.status(200).json({ success: true })
   } catch (err) {
     next(err)
   }
