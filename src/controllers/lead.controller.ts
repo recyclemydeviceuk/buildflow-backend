@@ -21,14 +21,15 @@ import { isValid, parse as parseDate, parseISO } from 'date-fns'
 const DISPOSITIONS = ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Failed']
 const FAILED_REASONS = ['Budget Issue', 'Not Interested', 'Location Issue', 'Timeline Issue', 'Competition', 'Other']
 const MEETING_TYPES = ['VC', 'Client Place']
- type BulkLeadUpdatePayload = {
-   source?: string
-   disposition?: string
-   owner?: string | null
-   ownerName?: string | null
-   assignedAt?: Date | null
-   isInQueue?: boolean
- }
+type BulkLeadUpdatePayload = {
+  source?: string
+  disposition?: string
+  owner?: string | null
+  ownerName?: string | null
+  assignedAt?: Date | null
+  isInQueue?: boolean
+  createdAt?: Date
+}
 
 const IMPORT_EXTRA_FIELDS = ['source', 'disposition', 'notes', 'ownerName', 'nextFollowUp', 'receivedDate', 'meetingType', 'meetingLocation', 'failedReason'] as const
 type ImportExtraField = (typeof IMPORT_EXTRA_FIELDS)[number]
@@ -202,6 +203,33 @@ const parseImportedDate = (
   }
 
   return null
+}
+
+const parseRequestedCreatedAt = (value: unknown): Date | undefined => {
+  if (value === undefined) return undefined
+
+  if (value instanceof Date) {
+    if (isValid(value)) return value
+    throw new Error('Created at date and time is invalid')
+  }
+
+  if (typeof value === 'number') {
+    const parsedDate = new Date(value)
+    if (isValid(parsedDate)) return parsedDate
+    throw new Error('Created at date and time is invalid')
+  }
+
+  const trimmedValue = String(value ?? '').trim()
+  if (!trimmedValue) {
+    throw new Error('Created at date and time is required')
+  }
+
+  const parsedDate = parseImportedDate(trimmedValue, { defaultHours: 0, defaultMinutes: 0 })
+  if (!parsedDate) {
+    throw new Error('Created at date and time is invalid')
+  }
+
+  return parsedDate
 }
 
 const parseImportBoolean = (value: string): boolean | null => {
@@ -632,6 +660,10 @@ const applyBulkLeadUpdate = (
       lead.statusNotes = [...(lead.statusNotes || []), buildStatusNote(payload.disposition, options.dispositionNote, options.req)]
     }
   }
+
+  if (payload.createdAt !== undefined) {
+    lead.createdAt = payload.createdAt
+  }
 }
 
 const deleteLeadDependencies = async (leadIds: mongoose.Types.ObjectId[]) => {
@@ -720,6 +752,7 @@ export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFun
       : undefined
     const rawOwner = req.body?.owner
     const dispositionNote = typeof req.body?.statusNote === 'string' ? req.body.statusNote.trim() : ''
+    let nextCreatedAt: Date | undefined
 
     if (nextSource) {
       bulkPayload.source = nextSource
@@ -740,6 +773,21 @@ export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFun
         const statusCode = message === 'Representative not found' ? 404 : 403
         return res.status(statusCode).json({ success: false, message })
       }
+    }
+
+    if (req.body?.createdAt !== undefined) {
+      try {
+        nextCreatedAt = parseRequestedCreatedAt(req.body.createdAt)
+      } catch (error: any) {
+        return res.status(400).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Created at date and time is invalid',
+        })
+      }
+    }
+
+    if (nextCreatedAt) {
+      bulkPayload.createdAt = nextCreatedAt
     }
 
     if (!Object.keys(bulkPayload).length) {
@@ -1410,6 +1458,18 @@ export const createLead = async (req: Request, res: Response, next: NextFunction
     const initialDisposition = req.body.disposition && DISPOSITIONS.includes(req.body.disposition) ? req.body.disposition : 'New'
     const resolvedSource = resolveSource(req.body.source)
     const normalizedPhone = normalizePhone(req.body.phone)
+    let createdAt: Date | undefined
+
+    if (req.body?.createdAt !== undefined) {
+      try {
+        createdAt = parseRequestedCreatedAt(req.body.createdAt)
+      } catch (error: any) {
+        return res.status(400).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Created at date and time is invalid',
+        })
+      }
+    }
 
     if (normalizedPhone) {
       const existingLead = await Lead.findOne({
@@ -1444,6 +1504,7 @@ export const createLead = async (req: Request, res: Response, next: NextFunction
       lastActivityNote: initialNote || req.body.lastActivityNote || 'Created manually in BuildFlow',
       notes: initialNote || req.body.notes || null,
       statusNotes: initialNote ? [buildStatusNote(initialDisposition, initialNote, req)] : [],
+      createdAt,
     }
 
     const lead = await Lead.create({
@@ -1495,7 +1556,20 @@ export const updateLead = async (req: Request, res: Response, next: NextFunction
     }
 
     const before = existing.toObject()
-    const lead = await Lead.findByIdAndUpdate(req.params.id, req.body, {
+    const updates = { ...req.body }
+
+    if (req.body?.createdAt !== undefined) {
+      try {
+        updates.createdAt = parseRequestedCreatedAt(req.body.createdAt)
+      } catch (error: any) {
+        return res.status(400).json({
+          success: false,
+          message: error instanceof Error ? error.message : 'Created at date and time is invalid',
+        })
+      }
+    }
+
+    const lead = await Lead.findByIdAndUpdate(req.params.id, updates, {
       new: true,
       runValidators: true,
     })

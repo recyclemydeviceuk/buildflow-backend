@@ -116,6 +116,8 @@ const LeadSchema = new Schema<ILead>(
   { timestamps: true }
 )
 
+LeadSchema.path('createdAt').immutable(false)
+
 LeadSchema.index({ phone: 1 })
 LeadSchema.index({ owner: 1 })
 LeadSchema.index({ disposition: 1 })
