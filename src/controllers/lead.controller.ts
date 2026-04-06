@@ -315,11 +315,11 @@ const resolveBulkLeadOwner = async (
   req: Request,
   rawOwner: unknown
 ): Promise<Pick<BulkLeadUpdatePayload, 'owner' | 'ownerName' | 'assignedAt' | 'isInQueue'>> => {
-  if (req.user!.role !== 'manager') {
-    throw new Error('Only managers can change lead assignment in bulk')
-  }
-
   if (rawOwner === null || rawOwner === undefined || rawOwner === '' || rawOwner === 'unassigned') {
+    if (req.user!.role !== 'manager') {
+      throw new Error('Only managers can unassign leads in bulk')
+    }
+
     return {
       owner: null,
       ownerName: null,
@@ -1625,6 +1625,12 @@ export const assignLead = async (req: Request, res: Response, next: NextFunction
     if (!before) {
       return res.status(404).json({ success: false, message: 'Lead not found' })
     }
+    if (!canAccessLead(req, before)) {
+      return res.status(403).json({ success: false, message: 'You do not have access to reassign this lead' })
+    }
+    if (req.user!.role === 'representative' && !targetUserId) {
+      return res.status(403).json({ success: false, message: 'Representatives can only transfer leads to another representative' })
+    }
 
     let owner = null
     let ownerName = null
@@ -2090,6 +2096,7 @@ export const createFollowUp = async (req: Request, res: Response, next: NextFunc
       scheduledAt: new Date(scheduledAt),
       notes: notes || null,
       status: 'pending',
+      notificationStates: [],
     })
 
     // Update lead's nextFollowUp field if this is the earliest pending follow-up
@@ -2143,12 +2150,14 @@ export const updateFollowUp = async (req: Request, res: Response, next: NextFunc
 
     if (scheduledAt !== undefined) {
       followUp.scheduledAt = new Date(scheduledAt)
+      followUp.notificationStates = []
     }
     if (notes !== undefined) {
       followUp.notes = notes || null
     }
     if (status !== undefined) {
       followUp.status = status
+      followUp.notificationStates = []
       if (status === 'completed' && !followUp.completedAt) {
         followUp.completedAt = new Date()
       } else if (status !== 'completed') {

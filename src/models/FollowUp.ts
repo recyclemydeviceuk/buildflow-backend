@@ -9,9 +9,23 @@ export interface IFollowUp extends Document {
   notes?: string | null
   status: 'pending' | 'completed' | 'cancelled'
   completedAt?: Date | null
+  notificationStates?: Array<{
+    user: mongoose.Types.ObjectId
+    confirmedAt?: Date | null
+    lastPromptAt?: Date | null
+  }>
   createdAt: Date
   updatedAt: Date
 }
+
+const FollowUpNotificationStateSchema = new Schema(
+  {
+    user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    confirmedAt: { type: Date, default: null },
+    lastPromptAt: { type: Date, default: null },
+  },
+  { _id: false }
+)
 
 const FollowUpSchema = new Schema<IFollowUp>(
   {
@@ -27,6 +41,7 @@ const FollowUpSchema = new Schema<IFollowUp>(
       default: 'pending',
     },
     completedAt: { type: Date, default: null },
+    notificationStates: { type: [FollowUpNotificationStateSchema], default: [] },
   },
   { timestamps: true }
 )
@@ -35,5 +50,6 @@ FollowUpSchema.index({ lead: 1 })
 FollowUpSchema.index({ owner: 1 })
 FollowUpSchema.index({ scheduledAt: 1 })
 FollowUpSchema.index({ status: 1 })
+FollowUpSchema.index({ 'notificationStates.user': 1 })
 
 export const FollowUp: Model<IFollowUp> = mongoose.model<IFollowUp>('FollowUp', FollowUpSchema)

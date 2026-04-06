@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.routes'
 import leadRoutes from './routes/lead.routes'
 import callRoutes from './routes/call.routes'
 import reminderRoutes from './routes/reminder.routes'
+import followUpRoutes from './routes/followUp.routes'
 import analyticsRoutes from './routes/analytics.routes'
 import reportsRoutes from './routes/reports.routes'
 import auditLogRoutes from './routes/auditLog.routes'
@@ -55,6 +56,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/leads', leadRoutes)
 app.use('/api/calls', callRoutes)
 app.use('/api/reminders', reminderRoutes)
+app.use('/api/follow-ups', followUpRoutes)
 app.use('/api/analytics', analyticsRoutes)
 app.use('/api/reports', reportsRoutes)
 app.use('/api/audit-logs', auditLogRoutes)

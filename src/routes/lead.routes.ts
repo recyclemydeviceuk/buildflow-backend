@@ -69,7 +69,7 @@ router.delete('/:id', requireManager, [param('id').isMongoId()], validate, delet
 
 router.patch(
   '/:id/assign',
-  requireManager,
+  requireRole('manager', 'representative'),
   [param('id').isMongoId(), body('userId').optional({ nullable: true }).isMongoId()],
   validate,
   assignLead
