@@ -635,35 +635,44 @@ const canAccessLead = (req: Request, lead: any): boolean => {
   return Boolean(lead.owner && String(lead.owner) === String(req.user!.id))
 }
 
-const applyBulkLeadUpdate = (
+const buildBulkUpdateDoc = (
   lead: any,
   payload: BulkLeadUpdatePayload,
   options: { dispositionNote?: string; req: Request }
-) => {
+): Record<string, unknown> => {
+  const $set: Record<string, unknown> = {}
+
   if (payload.source !== undefined) {
-    lead.source = payload.source
+    $set.source = payload.source
   }
 
   if (payload.owner !== undefined) {
-    lead.owner = payload.owner ? new mongoose.Types.ObjectId(payload.owner) : null
-    lead.ownerName = payload.ownerName ?? null
-    lead.assignedAt = payload.assignedAt ?? null
-    lead.isInQueue = payload.isInQueue ?? false
+    $set.owner = payload.owner ? new mongoose.Types.ObjectId(payload.owner) : null
+    $set.ownerName = payload.ownerName ?? null
+    $set.assignedAt = payload.assignedAt ?? null
+    $set.isInQueue = payload.isInQueue ?? false
   }
 
   if (payload.disposition !== undefined) {
-    lead.disposition = payload.disposition
-    lead.lastActivity = new Date()
-    lead.lastActivityNote = options.dispositionNote || null
-    lead.notes = options.dispositionNote || null
-    if (options.dispositionNote) {
-      lead.statusNotes = [...(lead.statusNotes || []), buildStatusNote(payload.disposition, options.dispositionNote, options.req)]
-    }
+    $set.disposition = payload.disposition
+    $set.lastActivity = new Date()
+    $set.lastActivityNote = options.dispositionNote || null
+    $set.notes = options.dispositionNote || null
   }
 
   if (payload.createdAt !== undefined) {
-    lead.createdAt = payload.createdAt
+    $set.createdAt = payload.createdAt
   }
+
+  const update: Record<string, unknown> = { $set }
+
+  if (payload.disposition !== undefined && options.dispositionNote) {
+    update.$push = {
+      statusNotes: buildStatusNote(payload.disposition, options.dispositionNote, options.req),
+    }
+  }
+
+  return update
 }
 
 const deleteLeadDependencies = async (leadIds: mongoose.Types.ObjectId[]) => {
@@ -807,8 +816,12 @@ export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFun
 
     for (const lead of accessibleLeads) {
       const before = lead.toObject()
-      applyBulkLeadUpdate(lead, bulkPayload, { dispositionNote, req })
-      await lead.save()
+      const updateDoc = buildBulkUpdateDoc(lead, bulkPayload, { dispositionNote, req })
+      const { $set, $push } = updateDoc as any
+      const rawUpdate: Record<string, unknown> = { $set: { ...$set, updatedAt: new Date() } }
+      if ($push) rawUpdate.$push = $push
+      await Lead.collection.updateOne({ _id: lead._id }, rawUpdate)
+      const after = await Lead.findById(lead._id)
       updatedIds.push(String(lead._id))
       auditEntries.push({
         actor: req.user!.id,
@@ -818,7 +831,7 @@ export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFun
         entity: 'Lead',
         entityId: String(lead._id),
         before,
-        after: lead.toObject(),
+        after: after?.toObject(),
       })
     }
 
@@ -1369,6 +1382,7 @@ export const lookupLeadsByPhones = async (req: Request, res: Response, next: Nex
     }, {})
 
     return res.status(200).json({ success: true, data })
+
   } catch (err) {
     next(err)
   }
@@ -1379,6 +1393,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     const {
       page = '1',
       limit = '20',
+
       search,
       disposition,
       source,
@@ -1390,32 +1405,55 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     } = req.query as Record<string, string>
 
     const filter: Record<string, unknown> = {}
+    const normalizedSearch = String(search || '').trim()
+    const normalizedDisposition = String(disposition || '').trim()
+    const normalizedSource = String(source || '').trim()
+    const normalizedCity = String(city || '').trim()
+    const normalizedOwner = String(owner || '').trim()
+    const normalizedReminderStatus = String(reminderStatus || '').trim()
+    const normalizedDateFrom = String(dateFrom || '').trim()
+    const normalizedDateTo = String(dateTo || '').trim()
 
-    if (search) {
+    if (normalizedSearch) {
       filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
+        { name: { $regex: normalizedSearch, $options: 'i' } },
+        { phone: { $regex: normalizedSearch, $options: 'i' } },
+        { email: { $regex: normalizedSearch, $options: 'i' } },
       ]
     }
-    if (disposition) filter.disposition = disposition
-    if (source) filter.source = source
-    if (city) filter.city = city
-    if (owner === 'unassigned') {
-      filter.owner = null
-    } else if (owner) {
-      filter.owner = owner
+    if (normalizedDisposition && normalizeComparator(normalizedDisposition) !== 'all') {
+      filter.disposition = resolveDisposition(normalizedDisposition)
     }
-    if (reminderStatus) filter.reminderStatus = reminderStatus
-    if (dateFrom || dateTo) {
+    if (normalizedSource && normalizeComparator(normalizedSource) !== 'all') {
+      filter.source = resolveSource(normalizedSource)
+    }
+    if (normalizedCity && normalizeComparator(normalizedCity) !== 'all') {
+      filter.city = normalizedCity
+    }
+    if (normalizeComparator(normalizedOwner) === 'unassigned') {
+      filter.owner = null
+    } else if (normalizedOwner && normalizeComparator(normalizedOwner) !== 'all' && mongoose.Types.ObjectId.isValid(normalizedOwner)) {
+      filter.owner = new mongoose.Types.ObjectId(normalizedOwner)
+    }
+    if (normalizedReminderStatus && normalizeComparator(normalizedReminderStatus) !== 'all') {
+      filter.reminderStatus = normalizedReminderStatus
+    }
+
+    const parsedDateFrom = normalizedDateFrom ? new Date(normalizedDateFrom) : null
+    const parsedDateTo = normalizedDateTo ? new Date(normalizedDateTo) : null
+
+    if (
+      (parsedDateFrom && !Number.isNaN(parsedDateFrom.getTime())) ||
+      (parsedDateTo && !Number.isNaN(parsedDateTo.getTime()))
+    ) {
       filter.createdAt = {
-        ...(dateFrom && { $gte: new Date(dateFrom) }),
-        ...(dateTo && { $lte: new Date(dateTo) }),
+        ...(parsedDateFrom && !Number.isNaN(parsedDateFrom.getTime()) && { $gte: parsedDateFrom }),
+        ...(parsedDateTo && !Number.isNaN(parsedDateTo.getTime()) && { $lte: parsedDateTo }),
       }
     }
 
     if (req.user!.role === 'representative') {
-      filter.owner = req.user!.id
+      filter.owner = new mongoose.Types.ObjectId(req.user!.id)
     }
 
     const pageNum = Math.max(1, parseInt(page))
@@ -1569,10 +1607,12 @@ export const updateLead = async (req: Request, res: Response, next: NextFunction
       }
     }
 
-    const lead = await Lead.findByIdAndUpdate(req.params.id, updates, {
-      new: true,
-      runValidators: true,
-    })
+    const { $set, $push } = updates as any
+    const rawUpdate: Record<string, unknown> = { $set: { ...$set, updatedAt: new Date() } }
+    if ($push) rawUpdate.$push = $push
+    await Lead.collection.updateOne({ _id: existing._id }, rawUpdate)
+
+    const lead = await Lead.findById(req.params.id)
 
     await AuditLog.create({
       actor: req.user!.id,
