@@ -1,4 +1,4 @@
-import axios from 'axios'
+import axios, { type AxiosResponse } from 'axios'
 import crypto from 'crypto'
 import { logger } from '../utils/logger'
 
@@ -77,6 +77,8 @@ export interface MetaLeadSyncOptions {
 
 const GRAPH_API_BASE_URL = 'https://graph.facebook.com/v19.0'
 
+type GraphApiResponse = AxiosResponse<any>
+
 const buildAppSecretProof = (accessToken: string, appSecret?: string | null) => {
   if (!appSecret) return undefined
   return crypto.createHmac('sha256', appSecret).update(accessToken).digest('hex')
@@ -115,7 +117,7 @@ const fetchMetaPages = async (userAccessToken: string, appSecret?: string | null
   })
 
   while (nextUrl) {
-    const response = await axios.get(nextUrl, { params })
+    const response: GraphApiResponse = await axios.get(nextUrl, { params })
     const batch = (response.data.data || []).map((page: any) => ({
       id: String(page.id),
       name: String(page.name || page.id),
@@ -145,7 +147,7 @@ const fetchMetaFormsForPage = async (
   })
 
   while (nextUrl) {
-    const response = await axios.get(nextUrl, { params })
+    const response: GraphApiResponse = await axios.get(nextUrl, { params })
     const batch = (response.data.data || []).map((form: any) => ({
       id: String(form.id),
       name: String(form.name || form.id),
@@ -178,7 +180,7 @@ const fetchMetaFormLeads = async (
   })
 
   while (nextUrl) {
-    const response = await axios.get(nextUrl, { params })
+    const response: GraphApiResponse = await axios.get(nextUrl, { params })
     const batch = (response.data.data || []).map((lead: any) => ({
       id: String(lead.id),
       created_time: typeof lead.created_time === 'string' ? lead.created_time : undefined,
@@ -204,7 +206,7 @@ export const fetchMetaAdAccounts = async (userAccessToken: string, appSecret?: s
   })
 
   while (nextUrl) {
-    const response = await axios.get(nextUrl, { params })
+    const response: GraphApiResponse = await axios.get(nextUrl, { params })
     const batch = (response.data.data || []).map((account: any) => ({
       id: normalizeMetaAdAccountId(String(account.account_id || account.id || '')),
       accountId: String(account.account_id || account.id || ''),
@@ -234,7 +236,7 @@ export const fetchMetaCampaigns = async (
   })
 
   while (nextUrl) {
-    const response = await axios.get(nextUrl, { params })
+    const response: GraphApiResponse = await axios.get(nextUrl, { params })
     const batch = (response.data.data || []).map((campaign: any) => ({
       id: String(campaign.id),
       name: String(campaign.name || campaign.id),
@@ -257,7 +259,7 @@ const fetchMetaAdDetails = async (
   appSecret?: string | null
 ): Promise<MetaAdDetails | null> => {
   try {
-    const response = await axios.get(`${GRAPH_API_BASE_URL}/${adId}`, {
+    const response: GraphApiResponse = await axios.get(`${GRAPH_API_BASE_URL}/${adId}`, {
       params: buildGraphParams(userAccessToken, appSecret, { fields: 'id,name,campaign{id,name},campaign_id,adset{id,name}' }),
     })
 
