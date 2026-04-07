@@ -1607,8 +1607,14 @@ export const updateLead = async (req: Request, res: Response, next: NextFunction
       }
     }
 
-    const { $set, $push } = updates as any
-    const rawUpdate: Record<string, unknown> = { $set: { ...$set, updatedAt: new Date() } }
+    const { $set, $push, ...directUpdates } = updates as any
+    const rawUpdate: Record<string, unknown> = {
+      $set: {
+        ...directUpdates,
+        ...$set,
+        updatedAt: new Date(),
+      },
+    }
     if ($push) rawUpdate.$push = $push
     await Lead.collection.updateOne({ _id: existing._id }, rawUpdate)
 
