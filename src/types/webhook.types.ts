@@ -48,6 +48,16 @@ export interface WebsiteLeadPayload {
   utmSource?: string
   utmMedium?: string
   utmCampaign?: string
+  utmTerm?: string
+  utmContent?: string
+  /** Google Ads click identifier */
+  gclid?: string
+  /** Google Ads broad-match click identifier */
+  gbraid?: string
+  /** Web browser RAID (Google Ads) */
+  wbraid?: string
+  /** Page URL where the form was submitted */
+  landingPage?: string
   /** All raw form fields captured from the website submission (label → value) */
   rawFields?: Record<string, string>
 }

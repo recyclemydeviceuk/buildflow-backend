@@ -55,6 +55,17 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     'utm_medium',
     'utmCampaign',
     'utm_campaign',
+    // Extended UTM params — handled explicitly in rawFields builder
+    'utmTerm',
+    'utm_term',
+    'utmContent',
+    'utm_content',
+    // Click / tracking IDs — handled explicitly in rawFields builder
+    'gclid',
+    'gbraid',
+    'wbraid',
+    'landing_page',
+    'landingPage',
   ])
 
   const topLevelFields = Object.entries(payload)
@@ -189,7 +200,7 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
   if (explicitBudget) rawFields['budget'] = rawFields['budget'] ?? explicitBudget
   if (resolvedMessage) rawFields['message'] = rawFields['message'] ?? resolvedMessage
 
-  // 3. UTM parameters
+  // 3. UTM parameters (all 5 standard UTM params)
   const utmSourceVal = String(payload.utmSource || payload.utm_source || '').trim()
   const utmMediumVal = String(payload.utmMedium || payload.utm_medium || '').trim()
   const utmCampaignVal = String(payload.utmCampaign || payload.utm_campaign || '').trim()
@@ -201,7 +212,19 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
   if (utmTermVal) rawFields['utm_term'] = utmTermVal
   if (utmContentVal) rawFields['utm_content'] = utmContentVal
 
-  // 4. Form / campaign name
+  // 4. Click / ad tracking identifiers
+  const gclidVal = String(payload.gclid || '').trim()
+  const gbraidVal = String(payload.gbraid || '').trim()
+  const wbraidVal = String(payload.wbraid || '').trim()
+  if (gclidVal) rawFields['gclid'] = gclidVal
+  if (gbraidVal) rawFields['gbraid'] = gbraidVal
+  if (wbraidVal) rawFields['wbraid'] = wbraidVal
+
+  // 5. Landing page URL
+  const landingPageVal = String(payload.landing_page || payload.landingPage || '').trim()
+  if (landingPageVal) rawFields['landing_page'] = landingPageVal
+
+  // 6. Form / campaign name
   const formNameVal = String(payload.form?.name || payload.form_name || payload.formName || '').trim()
   if (formNameVal) rawFields['form_name'] = formNameVal
   const campaignTopLevel = String(payload.campaign || '').trim()
@@ -219,9 +242,15 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
       undefined,
     budget: explicitBudget || undefined,
     message: resolvedMessage || undefined,
-    utmSource: String(payload.utmSource || payload.utm_source || '').trim() || undefined,
-    utmMedium: String(payload.utmMedium || payload.utm_medium || '').trim() || undefined,
-    utmCampaign: String(payload.utmCampaign || payload.utm_campaign || '').trim() || undefined,
+    utmSource: utmSourceVal || undefined,
+    utmMedium: utmMediumVal || undefined,
+    utmCampaign: utmCampaignVal || undefined,
+    utmTerm: utmTermVal || undefined,
+    utmContent: utmContentVal || undefined,
+    gclid: gclidVal || undefined,
+    gbraid: gbraidVal || undefined,
+    wbraid: wbraidVal || undefined,
+    landingPage: landingPageVal || undefined,
     rawFields: Object.keys(rawFields).length > 0 ? rawFields : undefined,
   }
 }
