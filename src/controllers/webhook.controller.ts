@@ -7,6 +7,7 @@ import { processMetaLeadgen } from '../webhooks/meta.webhook'
 import { verifyMetaWebhookSignature } from '../services/meta.service'
 import { processWebsiteLead } from '../webhooks/website.webhook'
 import { ExotelCallStatusPayload, ExotelSMSStatusCallbackPayload, ExoVoiceAnalyzeWebhookPayload } from '../types/exotel.types'
+import { logger } from '../utils/logger'
 
 const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
   const normalizeFieldEntry = (key: string, value: unknown) => {
@@ -14,6 +15,7 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
       return {
         key,
         label: String((value as any).title || (value as any).label || key).toLowerCase(),
+        type: String((value as any).type || '').toLowerCase(),
         value: String((value as any).value || (value as any).raw_value || '').trim(),
       }
     }
@@ -21,6 +23,7 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     return {
       key,
       label: String(key).toLowerCase(),
+      type: '',
       value: String(Array.isArray(value) ? value.join(', ') : value || '').trim(),
     }
   }
@@ -59,29 +62,120 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     .map(([key, value]) => normalizeFieldEntry(key, value))
 
   const fieldEntries = [...nestedFields, ...topLevelFields]
+  const populatedFieldEntries = fieldEntries.filter((entry) => entry.value)
+  const isPhoneValue = (value?: string) => value ? value.replace(/\D/g, '').length >= 10 : false
+  const isEmailValue = (value?: string) => value ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim()) : false
 
   const findField = (...names: string[]) => {
     const normalizedNames = names.map((name) => name.toLowerCase())
-    const exact = fieldEntries.find((entry) => normalizedNames.includes(entry.key.toLowerCase()) || normalizedNames.includes(entry.label))
+    const exact = populatedFieldEntries.find((entry) => normalizedNames.includes(entry.key.toLowerCase()) || normalizedNames.includes(entry.label))
     if (exact?.value) return exact.value
 
-    const partial = fieldEntries.find((entry) =>
+    const partial = populatedFieldEntries.find((entry) =>
       normalizedNames.some((name) => entry.key.toLowerCase().includes(name) || entry.label.includes(name))
     )
     return partial?.value || ''
   }
 
+  const excludeValues = (...values: Array<string | undefined>) => {
+    const blocked = new Set(
+      values
+        .map((value) => String(value || '').trim().toLowerCase())
+        .filter(Boolean)
+    )
+
+    return populatedFieldEntries.filter((entry) => !blocked.has(entry.value.trim().toLowerCase()))
+  }
+
+  const findByType = (types: string[], entries = populatedFieldEntries) =>
+    entries.find((entry) => types.includes(entry.type))
+
+  const findByValue = (predicate: (value: string) => boolean, entries = populatedFieldEntries) =>
+    entries.find((entry) => predicate(entry.value))
+
+  const findLikelyName = (entries = populatedFieldEntries) =>
+    entries.find((entry) => {
+      if (!entry.value) return false
+      if (entry.type && ['email', 'tel', 'number', 'textarea', 'select', 'checkbox', 'radio'].includes(entry.type)) return false
+      if (isEmailValue(entry.value) || isPhoneValue(entry.value)) return false
+      if (entry.value.length < 2) return false
+      return /[a-z]/i.test(entry.value)
+    })
+
+  const findLikelyCity = (entries = populatedFieldEntries) =>
+    entries.find((entry) => {
+      if (!entry.value) return false
+      if (isEmailValue(entry.value) || isPhoneValue(entry.value)) return false
+      if (entry.type && ['email', 'tel', 'number', 'textarea'].includes(entry.type)) return false
+      const normalized = entry.value.toLowerCase()
+      if (/(sq\s*ft|sqft|plot|construction|requirement|budget)/i.test(normalized)) return false
+      return /[a-z]/i.test(entry.value)
+    })
+
+  const findLikelyMessage = (entries = populatedFieldEntries) =>
+    findByType(['textarea'], entries) ||
+    entries.find((entry) => entry.value.length > 24)
+
+  const explicitName = String(payload.name || findField('name', 'full_name')).trim()
+  const explicitPhone = String(payload.phone || findField('phone', 'phone_number', 'mobile', 'mobile_number')).trim()
+  const explicitEmail = String(payload.email || findField('email')).trim()
+  const remainingAfterExplicitCore = excludeValues(explicitName, explicitPhone, explicitEmail)
+
+  const fallbackPhone =
+    findByType(['tel'], remainingAfterExplicitCore)?.value ||
+    findByValue((value) => isPhoneValue(value), remainingAfterExplicitCore)?.value ||
+    ''
+  const resolvedPhone = explicitPhone || fallbackPhone
+
+  const remainingAfterPhone = excludeValues(explicitName, resolvedPhone, explicitEmail)
+  const fallbackEmail =
+    findByType(['email'], remainingAfterPhone)?.value ||
+    findByValue((value) => isEmailValue(value), remainingAfterPhone)?.value ||
+    ''
+  const resolvedEmail = explicitEmail || fallbackEmail
+
+  const remainingAfterCore = excludeValues(explicitName, resolvedPhone, resolvedEmail)
+  const fallbackName = findLikelyName(remainingAfterCore)?.value || ''
+  const resolvedName = explicitName || fallbackName
+
+  const explicitCity = String(payload.city || findField('city', 'location')).trim()
+  const explicitBudget = String(payload.budget || findField('budget')).trim()
+  const explicitMessage = String(payload.message || findField('message', 'notes', 'requirements')).trim()
+
+  const remainingAfterNamedFields = excludeValues(
+    resolvedName,
+    resolvedPhone,
+    resolvedEmail,
+    explicitCity,
+    explicitBudget,
+    explicitMessage
+  )
+
+  const fallbackCity = findLikelyCity(remainingAfterNamedFields)?.value || ''
+  const resolvedCity = explicitCity || fallbackCity
+
+  const remainingAfterCity = excludeValues(
+    resolvedName,
+    resolvedPhone,
+    resolvedEmail,
+    resolvedCity,
+    explicitBudget,
+    explicitMessage
+  )
+  const fallbackMessage = findLikelyMessage(remainingAfterCity)?.value || ''
+  const resolvedMessage = explicitMessage || fallbackMessage
+
   return {
-    name: String(payload.name || findField('name', 'full_name')).trim(),
-    phone: String(payload.phone || findField('phone', 'phone_number', 'mobile', 'mobile_number')).trim(),
-    email: String(payload.email || findField('email')).trim() || undefined,
-    city: String(payload.city || findField('city', 'location')).trim() || undefined,
+    name: resolvedName,
+    phone: resolvedPhone,
+    email: resolvedEmail || undefined,
+    city: resolvedCity || undefined,
     campaign:
       String(payload.campaign || findField('campaign', 'campaign_name')).trim() ||
       String(payload.form?.name || payload.form_name || payload.formName || '').trim() ||
       undefined,
-    budget: String(payload.budget || findField('budget')).trim() || undefined,
-    message: String(payload.message || findField('message', 'notes', 'requirements')).trim() || undefined,
+    budget: explicitBudget || undefined,
+    message: resolvedMessage || undefined,
     utmSource: String(payload.utmSource || payload.utm_source || '').trim() || undefined,
     utmMedium: String(payload.utmMedium || payload.utm_medium || '').trim() || undefined,
     utmCampaign: String(payload.utmCampaign || payload.utm_campaign || '').trim() || undefined,
@@ -123,6 +217,15 @@ export const handleWebsiteLead = async (req: Request, res: Response, next: NextF
     const { name, phone } = parsedPayload
 
     if (!name || !phone) {
+      logger.warn('Website lead rejected because required fields could not be resolved', {
+        bodyKeys: Object.keys(req.body || {}),
+        hasFieldsArray: Array.isArray(req.body?.fields),
+        fieldsObjectKeys:
+          req.body?.fields && typeof req.body.fields === 'object' && !Array.isArray(req.body.fields)
+            ? Object.keys(req.body.fields)
+            : [],
+        parsedPayload,
+      })
       return res.status(400).json({ success: false, message: 'name and phone are required' })
     }
 
