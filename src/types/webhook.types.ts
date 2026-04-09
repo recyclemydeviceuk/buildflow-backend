@@ -48,4 +48,6 @@ export interface WebsiteLeadPayload {
   utmSource?: string
   utmMedium?: string
   utmCampaign?: string
+  /** All raw form fields captured from the website submission (label → value) */
+  rawFields?: Record<string, string>
 }

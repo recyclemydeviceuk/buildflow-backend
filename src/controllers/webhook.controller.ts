@@ -165,6 +165,49 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
   const fallbackMessage = findLikelyMessage(remainingAfterCity)?.value || ''
   const resolvedMessage = explicitMessage || fallbackMessage
 
+  // ─── Build rawFields: capture EVERY form field that has a value ───────────
+  // This is stored on the lead so the CRM can display all submitted data
+  // regardless of whether the field is a known CRM field or a custom one.
+  const rawFields: Record<string, string> = {}
+
+  // 1. All parsed form field entries (from payload.fields array or extra top-level keys)
+  for (const entry of fieldEntries) {
+    if (!entry.value) continue
+    // Prefer human-readable label; fall back to the raw key
+    const displayKey = (entry.label && entry.label !== entry.key.toLowerCase())
+      ? entry.label
+      : entry.key
+    rawFields[displayKey] = entry.value
+  }
+
+  // 2. Known top-level fields that were excluded from topLevelFields by reservedTopLevelKeys
+  //    but may not be present inside payload.fields
+  if (resolvedName) rawFields['name'] = rawFields['name'] ?? resolvedName
+  if (resolvedPhone) rawFields['phone'] = rawFields['phone'] ?? resolvedPhone
+  if (resolvedEmail) rawFields['email'] = rawFields['email'] ?? resolvedEmail
+  if (resolvedCity) rawFields['city'] = rawFields['city'] ?? resolvedCity
+  if (explicitBudget) rawFields['budget'] = rawFields['budget'] ?? explicitBudget
+  if (resolvedMessage) rawFields['message'] = rawFields['message'] ?? resolvedMessage
+
+  // 3. UTM parameters
+  const utmSourceVal = String(payload.utmSource || payload.utm_source || '').trim()
+  const utmMediumVal = String(payload.utmMedium || payload.utm_medium || '').trim()
+  const utmCampaignVal = String(payload.utmCampaign || payload.utm_campaign || '').trim()
+  const utmTermVal = String(payload.utmTerm || payload.utm_term || '').trim()
+  const utmContentVal = String(payload.utmContent || payload.utm_content || '').trim()
+  if (utmSourceVal) rawFields['utm_source'] = utmSourceVal
+  if (utmMediumVal) rawFields['utm_medium'] = utmMediumVal
+  if (utmCampaignVal) rawFields['utm_campaign'] = utmCampaignVal
+  if (utmTermVal) rawFields['utm_term'] = utmTermVal
+  if (utmContentVal) rawFields['utm_content'] = utmContentVal
+
+  // 4. Form / campaign name
+  const formNameVal = String(payload.form?.name || payload.form_name || payload.formName || '').trim()
+  if (formNameVal) rawFields['form_name'] = formNameVal
+  const campaignTopLevel = String(payload.campaign || '').trim()
+  if (campaignTopLevel) rawFields['campaign'] = rawFields['campaign'] ?? campaignTopLevel
+  // ─────────────────────────────────────────────────────────────────────────
+
   return {
     name: resolvedName,
     phone: resolvedPhone,
@@ -179,6 +222,7 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     utmSource: String(payload.utmSource || payload.utm_source || '').trim() || undefined,
     utmMedium: String(payload.utmMedium || payload.utm_medium || '').trim() || undefined,
     utmCampaign: String(payload.utmCampaign || payload.utm_campaign || '').trim() || undefined,
+    rawFields: Object.keys(rawFields).length > 0 ? rawFields : undefined,
   }
 }
 

@@ -48,6 +48,7 @@ export interface ILead extends Document {
   tags: string[]
   notes?: string | null
   statusNotes: ILeadStatusNote[]
+  websiteFormData?: Record<string, string> | null
   createdAt: Date
   updatedAt: Date
 }
@@ -112,6 +113,7 @@ const LeadSchema = new Schema<ILead>(
     tags: [{ type: String }],
     notes: { type: String, default: null },
     statusNotes: { type: [LeadStatusNoteSchema], default: [] },
+    websiteFormData: { type: Schema.Types.Mixed, default: null },
   },
   { timestamps: true }
 )
