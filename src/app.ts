@@ -19,6 +19,7 @@ import uploadRoutes from './routes/upload.routes'
 import webhookRoutes from './routes/webhook.routes'
 import integrationRoutes from './routes/integration.routes'
 import performanceRoutes from './routes/performance.routes'
+import emiCalculatorRoutes from './routes/emiCalculator.routes'
 
 const app = express()
 const allowedOrigins = new Set(CORS_ALLOWED_ORIGINS)
@@ -65,6 +66,7 @@ app.use('/api/uploads', uploadRoutes)
 app.use('/api/webhooks', webhookRoutes)
 app.use('/api/integrations', integrationRoutes)
 app.use('/api/performance', performanceRoutes)
+app.use('/api/emi-calculator', emiCalculatorRoutes)
 
 app.use(notFound)
 app.use(errorHandler)
