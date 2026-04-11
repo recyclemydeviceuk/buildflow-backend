@@ -8,6 +8,7 @@ import { sendWelcomeEmail } from '../services/ses.service'
 import { normalizeNotificationPrefs } from '../utils/notificationPrefs'
 import { normalizeLeadFields } from '../utils/leadFields'
 import { normalizeFeatureControls } from '../utils/featureControls'
+import { reconcileAllStuckCallStatuses } from './call.controller'
 
 const broadcastUserAvailability = (user: any) => {
   emitUserAvailabilityUpdate({
@@ -311,6 +312,9 @@ export const updateNotificationSettings = async (req: Request, res: Response, ne
 
 export const getTeamMembers = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Silently heal any reps whose 'in-call' status was never cleared
+    // (e.g. Exotel webhook missed, server restarted mid-call).
+    await reconcileAllStuckCallStatuses().catch(() => {/* non-fatal */})
     const members = await User.find().select('-password')
     return res.status(200).json({ success: true, data: members })
   } catch (err) {

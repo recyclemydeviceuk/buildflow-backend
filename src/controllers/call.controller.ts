@@ -365,6 +365,33 @@ const reconcileRepresentativeCallState = async (representative: any) => {
   return openCall
 }
 
+/**
+ * Finds every user currently marked 'in-call' and reconciles their state
+ * against live call records. Any rep with no open call gets reset to 'available'.
+ * Safe to call any time – it only modifies users whose state is actually wrong.
+ */
+export const reconcileAllStuckCallStatuses = async (): Promise<number> => {
+  const inCallUsers = await User.find({ callAvailabilityStatus: 'in-call' }).select(
+    'name phone role isActive callAvailabilityStatus callDeviceMode activeCallSid'
+  )
+  let fixed = 0
+  for (const user of inCallUsers) {
+    const before = user.callAvailabilityStatus
+    await reconcileRepresentativeCallState(user)
+    if (user.callAvailabilityStatus !== before) fixed++
+  }
+  return fixed
+}
+
+export const resetStuckCallStatuses = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const fixed = await reconcileAllStuckCallStatuses()
+    return res.status(200).json({ success: true, message: `Reconciled ${fixed} stuck call status(es)`, fixed })
+  } catch (err) {
+    next(err)
+  }
+}
+
 export const initiateCall = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { leadId, phone, leadName, city, agentPhone, representativeId, recordCall } = req.body

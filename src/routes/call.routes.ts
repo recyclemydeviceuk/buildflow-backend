@@ -11,6 +11,7 @@ import {
   getCallRecording,
   getCallsDebug,
   purgeOrphanedCalls,
+  resetStuckCallStatuses,
 } from '../controllers/call.controller'
 import { listMessagesForCall, sendMessageForCall } from '../controllers/sms.controller'
 import { authenticate } from '../middleware/auth.middleware'
@@ -26,6 +27,8 @@ router.get('/', getCalls)
 router.get('/debug', getCallsDebug)
 
 router.post('/purge-orphaned', purgeOrphanedCalls)
+
+router.post('/reconcile-statuses', resetStuckCallStatuses)
 
 router.post('/sync', syncCallsFromExotel)
 
