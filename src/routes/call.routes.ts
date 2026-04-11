@@ -15,6 +15,7 @@ import {
 import { listMessagesForCall, sendMessageForCall } from '../controllers/sms.controller'
 import { authenticate } from '../middleware/auth.middleware'
 import { validate } from '../middleware/validate.middleware'
+import { requireFeature } from '../middleware/featureControl.middleware'
 
 const router = Router()
 
@@ -48,6 +49,7 @@ router.get('/lead/:leadId', [param('leadId').isMongoId()], validate, getCallsByL
 
 router.post(
   '/initiate',
+  requireFeature('dialer'),
   [
     body('leadId').optional().isMongoId(),
     body('phone').optional().isString().notEmpty(),

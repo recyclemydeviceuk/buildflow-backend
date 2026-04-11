@@ -16,6 +16,7 @@ export interface ISettings extends Document {
     fields: LeadFieldDefinition[]
   }
   cities: string[]
+  sources: string[]
   featureControls: {
     manualAssignment: boolean
     dialer: boolean
@@ -24,6 +25,12 @@ export interface ISettings extends Document {
     autoQueueing: boolean
     smsEnabled: boolean
     whatsappEnabled: boolean
+    followUpReminders: boolean
+    exportLeads: boolean
+    bulkEdit: boolean
+    auditLog: boolean
+    analyticsAccess: boolean
+    representativeCanDelete: boolean
   }
   notifications: {
     reminderLeadTime: number
@@ -72,6 +79,10 @@ const SettingsSchema = new Schema<ISettings>(
       type: [String],
       default: ['Hyderabad', 'Bangalore', 'Mumbai', 'Pune', 'Chennai', 'Delhi', 'Kolkata'],
     },
+    sources: {
+      type: [String],
+      default: ['Direct', 'Manual', 'Meta', 'Website', 'Google ADS'],
+    },
     featureControls: {
       manualAssignment: { type: Boolean, default: DEFAULT_FEATURE_CONTROLS.manualAssignment },
       dialer: { type: Boolean, default: DEFAULT_FEATURE_CONTROLS.dialer },
@@ -80,6 +91,12 @@ const SettingsSchema = new Schema<ISettings>(
       autoQueueing: { type: Boolean, default: true },
       smsEnabled: { type: Boolean, default: DEFAULT_FEATURE_CONTROLS.smsEnabled },
       whatsappEnabled: { type: Boolean, default: DEFAULT_FEATURE_CONTROLS.whatsappEnabled },
+      followUpReminders: { type: Boolean, default: true },
+      exportLeads: { type: Boolean, default: true },
+      bulkEdit: { type: Boolean, default: true },
+      auditLog: { type: Boolean, default: true },
+      analyticsAccess: { type: Boolean, default: true },
+      representativeCanDelete: { type: Boolean, default: false },
     },
     notifications: {
       reminderLeadTime: { type: Number, default: 30 },

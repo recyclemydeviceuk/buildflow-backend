@@ -1316,9 +1316,10 @@ export const importLeadsFromFile = async (req: Request, res: Response, next: Nex
 
 export const getLeadFilters = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const [dbCities, settings, owners] = await Promise.all([
+    const [dbCities, dbSources, settings, owners] = await Promise.all([
       Lead.distinct('city'),
-      Settings.findOne({}, 'cities'),
+      Lead.distinct('source'),
+      Settings.findOne({}, 'cities sources'),
       User.find({ role: 'representative', isActive: true }, 'name _id').sort({ name: 1 }),
     ])
 
@@ -1327,11 +1328,19 @@ export const getLeadFilters = async (req: Request, res: Response, next: NextFunc
       ? settings.cities
       : dbCities.filter(c => c && c !== 'Unknown')
 
+    // If settings has configured sources, use those as the base; always merge in any DB sources not yet listed
+    const baseSources = (settings?.sources && settings.sources.length > 0)
+      ? settings.sources
+      : [...LEAD_SOURCES]
+    const allSources = Array.from(
+      new Set([...baseSources, ...dbSources.filter((s): s is string => Boolean(s))])
+    ).sort()
+
     return res.status(200).json({
       success: true,
       data: {
         cities: citiesToReturn.sort(),
-        sources: [...LEAD_SOURCES],
+        sources: allSources,
         dispositions: DISPOSITIONS,
         owners: owners.map(o => ({ id: String(o._id), name: o.name })),
         leadFields: normalizeLeadFields(settings?.leadFields),
@@ -1452,9 +1461,9 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
       }
     }
 
-    if (req.user!.role === 'representative') {
-      filter.owner = new mongoose.Types.ObjectId(req.user!.id)
-    }
+    // Representatives now see ALL leads (read-only for leads they don't own).
+    // Write operations (update, assign, delete) still require canAccessLead.
+    // If the rep passed owner=myId it still filters correctly; we just don't force it.
 
     const pageNum = Math.max(1, parseInt(page))
     const limitNum = Math.min(100, parseInt(limit))
@@ -1481,9 +1490,8 @@ export const getLeadById = async (req: Request, res: Response, next: NextFunctio
     if (!lead) {
       return res.status(404).json({ success: false, message: 'Lead not found' })
     }
-    if (!canAccessLead(req, lead)) {
-      return res.status(403).json({ success: false, message: 'You do not have access to this lead' })
-    }
+    // Any authenticated user can VIEW any lead.
+    // Edit/delete/assign operations enforce ownership via canAccessLead.
     return res.status(200).json({ success: true, data: lead })
   } catch (err) {
     next(err)
@@ -1796,6 +1804,7 @@ export const assignLead = async (req: Request, res: Response, next: NextFunction
 
     emitToTeam('all', 'lead:assigned', {
       leadId: String(lead!._id),
+      leadName: lead!.name,
       assignedTo: owner ? String(owner) : null,
       assignedToName: ownerName,
     })
@@ -2261,8 +2270,12 @@ export const updateFollowUp = async (req: Request, res: Response, next: NextFunc
       return res.status(400).json({ success: false, message: 'Follow-up does not belong to this lead' })
     }
 
-    // Access control
-    if (req.user!.role === 'representative' && String(followUp.owner) !== String(req.user!.id)) {
+    // Fetch the lead early so we can check CURRENT ownership (not the original follow-up creator).
+    // After reassignment the new owner must be able to edit follow-ups set by the old owner.
+    const lead = await Lead.findById(id)
+
+    // Access control: check against the lead's current owner, not the follow-up creator
+    if (req.user!.role === 'representative' && String(lead?.owner) !== String(req.user!.id)) {
       return res.status(403).json({ success: false, message: 'Access denied' })
     }
 
@@ -2288,7 +2301,6 @@ export const updateFollowUp = async (req: Request, res: Response, next: NextFunc
     await followUp.save()
 
     // Update lead's nextFollowUp if needed
-    const lead = await Lead.findById(id)
     if (lead) {
       const pendingFollowUps = await FollowUp.find({
         lead: new mongoose.Types.ObjectId(id),
@@ -2330,8 +2342,12 @@ export const deleteFollowUp = async (req: Request, res: Response, next: NextFunc
       return res.status(400).json({ success: false, message: 'Follow-up does not belong to this lead' })
     }
 
-    // Access control
-    if (req.user!.role === 'representative' && String(followUp.owner) !== String(req.user!.id)) {
+    // Fetch lead early to check CURRENT ownership (not original follow-up creator).
+    // After reassignment the new lead owner gets full control over all follow-ups.
+    const lead = await Lead.findById(id)
+
+    // Access control: current lead owner, not the follow-up's original creator
+    if (req.user!.role === 'representative' && String(lead?.owner) !== String(req.user!.id)) {
       return res.status(403).json({ success: false, message: 'Access denied' })
     }
 
@@ -2340,7 +2356,6 @@ export const deleteFollowUp = async (req: Request, res: Response, next: NextFunc
     await FollowUp.findByIdAndDelete(followUpId)
 
     // Update lead's nextFollowUp if needed
-    const lead = await Lead.findById(id)
     if (lead) {
       const pendingFollowUps = await FollowUp.find({
         lead: new mongoose.Types.ObjectId(id),

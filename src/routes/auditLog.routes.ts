@@ -9,10 +9,11 @@ import {
 import { authenticate } from '../middleware/auth.middleware'
 import { requireManager } from '../middleware/role.middleware'
 import { validate } from '../middleware/validate.middleware'
+import { requireFeature } from '../middleware/featureControl.middleware'
 
 const router = Router()
 
-router.use(authenticate, requireManager)
+router.use(authenticate, requireManager, requireFeature('auditLog'))
 
 router.get('/', getAuditLogs)
 router.get('/filters', getAuditLogFilters)

@@ -11,10 +11,11 @@ import {
 } from '../controllers/analytics.controller'
 import { authenticate } from '../middleware/auth.middleware'
 import { requireManager } from '../middleware/role.middleware'
+import { requireFeature } from '../middleware/featureControl.middleware'
 
 const router = Router()
 
-router.use(authenticate)
+router.use(authenticate, requireFeature('analyticsAccess'))
 
 router.get('/rep-dashboard', getRepresentativeDashboard)
 router.get('/rep-performance-dashboard', getRepresentativePerformanceDashboard)

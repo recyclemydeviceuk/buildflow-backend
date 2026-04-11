@@ -5,6 +5,7 @@ import {
   updateLeadRouting,
   updateLeadFields,
   updateCities,
+  updateSources,
   updateFeatureControls,
   updateNotificationSettings,
   getSmsTemplates,
@@ -44,6 +45,7 @@ router.get('/', requireManager, getSettings)
 router.patch('/lead-routing', requireManager, updateLeadRouting)
 router.patch('/lead-fields', requireManager, updateLeadFields)
 router.patch('/cities', requireManager, updateCities)
+router.patch('/sources', requireManager, updateSources)
 router.patch('/feature-controls', requireManager, updateFeatureControls)
 router.patch('/notifications', requireManager, updateNotificationSettings)
 

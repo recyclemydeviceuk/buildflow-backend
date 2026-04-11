@@ -248,6 +248,26 @@ export const updateCities = async (req: Request, res: Response, next: NextFuncti
   }
 }
 
+export const updateSources = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { sources } = req.body
+
+    if (!Array.isArray(sources) || sources.some((s) => typeof s !== 'string')) {
+      return res.status(400).json({ success: false, message: 'sources must be an array of strings' })
+    }
+
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      { sources: sources.map((s: string) => s.trim()).filter(Boolean) },
+      { new: true, upsert: true }
+    )
+
+    return res.status(200).json({ success: true, data: settings })
+  } catch (err) {
+    next(err)
+  }
+}
+
 export const updateFeatureControls = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const currentSettings = await Settings.findOne()

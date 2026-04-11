@@ -8,10 +8,11 @@ import {
 } from '../controllers/followUp.controller'
 import { authenticate } from '../middleware/auth.middleware'
 import { validate } from '../middleware/validate.middleware'
+import { requireFeature } from '../middleware/featureControl.middleware'
 
 const router = Router()
 
-router.use(authenticate)
+router.use(authenticate, requireFeature('followUpReminders'))
 
 router.get('/', getFollowUps)
 router.get('/notifications/next', getNextFollowUpPopup)

@@ -27,6 +27,7 @@ import { authenticate } from '../middleware/auth.middleware'
 import { requireManager, requireRole } from '../middleware/role.middleware'
 import { uploadImport } from '../middleware/multer.middleware'
 import { validate } from '../middleware/validate.middleware'
+import { requireFeature, requireDeletePermission } from '../middleware/featureControl.middleware'
 
 const router = Router()
 
@@ -34,8 +35,8 @@ router.use(authenticate)
 
 router.post('/import/preview', requireRole('manager', 'representative'), uploadImport, previewLeadImport)
 router.post('/import', requireRole('manager', 'representative'), uploadImport, importLeadsFromFile)
-router.post('/export', requireManager, exportLeads)
-router.post('/bulk-delete', requireManager, [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()], validate, bulkDeleteLeads)
+router.post('/export', requireManager, requireFeature('exportLeads'), exportLeads)
+router.post('/bulk-delete', requireManager, requireFeature('bulkEdit'), [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()], validate, bulkDeleteLeads)
 router.get('/filters', getLeadFilters)
 router.post('/lookup-by-phone', [body('phones').isArray()], validate, lookupLeadsByPhones)
 
@@ -44,6 +45,7 @@ router.get('/', getLeads)
 router.post(
   '/bulk-update',
   requireRole('manager', 'representative'),
+  requireFeature('bulkEdit'),
   [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()],
   validate,
   bulkUpdateLeads
@@ -65,7 +67,7 @@ router.post(
 
 router.put('/:id', [param('id').isMongoId()], validate, updateLead)
 
-router.delete('/:id', requireManager, [param('id').isMongoId()], validate, deleteLead)
+router.delete('/:id', requireDeletePermission, [param('id').isMongoId()], validate, deleteLead)
 
 router.patch(
   '/:id/assign',

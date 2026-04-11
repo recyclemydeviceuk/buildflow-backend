@@ -18,6 +18,18 @@ export interface ILead extends Document {
   meetingType?: 'VC' | 'Client Place' | null
   meetingLocation?: string | null
   failedReason?: string | null
+  // Booking Done fields
+  bookingPackage?: string | null
+  proposedProjectValue?: string | null
+  bookingAmountCollected?: string | null
+  bookingDate?: Date | null
+  numberOfFloors?: string | null
+  assignedArchitect?: string | null
+  // Agreement Done fields
+  agreementProjectValue?: string | null
+  agreementDate?: Date | null
+  agreementAmount?: string | null
+  totalCollection?: string | null
   owner?: mongoose.Types.ObjectId | null
   ownerName?: string | null
   budget?: string | null
@@ -83,6 +95,18 @@ const LeadSchema = new Schema<ILead>(
     meetingType: { type: String, enum: ['VC', 'Client Place', null], default: null },
     meetingLocation: { type: String, default: null, trim: true },
     failedReason: { type: String, default: null, trim: true },
+    // Booking Done fields
+    bookingPackage: { type: String, default: null, trim: true },
+    proposedProjectValue: { type: String, default: null, trim: true },
+    bookingAmountCollected: { type: String, default: null, trim: true },
+    bookingDate: { type: Date, default: null },
+    numberOfFloors: { type: String, default: null, trim: true },
+    assignedArchitect: { type: String, default: null, trim: true },
+    // Agreement Done fields
+    agreementProjectValue: { type: String, default: null, trim: true },
+    agreementDate: { type: Date, default: null },
+    agreementAmount: { type: String, default: null, trim: true },
+    totalCollection: { type: String, default: null, trim: true },
     owner: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     ownerName: { type: String, default: null },
     budget: { type: String, default: null },
