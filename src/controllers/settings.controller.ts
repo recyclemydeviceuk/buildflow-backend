@@ -92,6 +92,8 @@ export const updateMyProfile = async (req: Request, res: Response, next: NextFun
 
     const updateFields: Record<string, unknown> = { name, phone, notificationPrefs: nextNotificationPrefs, callAvailabilityStatus, callDeviceMode }
     if (email) updateFields.email = email.toLowerCase()
+    // When explicitly resetting to available, also clear any stale activeCallSid
+    if (callAvailabilityStatus === 'available') updateFields.activeCallSid = null
 
     const user = await User.findByIdAndUpdate(
       req.user!.id,

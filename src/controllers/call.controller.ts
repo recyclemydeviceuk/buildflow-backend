@@ -371,14 +371,20 @@ const reconcileRepresentativeCallState = async (representative: any) => {
  * Safe to call any time – it only modifies users whose state is actually wrong.
  */
 export const reconcileAllStuckCallStatuses = async (): Promise<number> => {
-  const inCallUsers = await User.find({ callAvailabilityStatus: 'in-call' }).select(
-    'name phone role isActive callAvailabilityStatus callDeviceMode activeCallSid'
-  )
+  // Catch both 'in-call' AND users with a stale activeCallSid (shows as 'Dialing' in UI)
+  const stuckUsers = await User.find({
+    $or: [
+      { callAvailabilityStatus: 'in-call' },
+      { activeCallSid: { $ne: null } },
+    ]
+  }).select('name phone role isActive callAvailabilityStatus callDeviceMode activeCallSid')
+
   let fixed = 0
-  for (const user of inCallUsers) {
-    const before = user.callAvailabilityStatus
+  for (const user of stuckUsers) {
+    const beforeStatus = user.callAvailabilityStatus
+    const beforeSid = user.activeCallSid
     await reconcileRepresentativeCallState(user)
-    if (user.callAvailabilityStatus !== before) fixed++
+    if (user.callAvailabilityStatus !== beforeStatus || user.activeCallSid !== beforeSid) fixed++
   }
   return fixed
 }
