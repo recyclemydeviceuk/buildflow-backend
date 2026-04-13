@@ -270,8 +270,8 @@ const ensureLeadForDialerPhone = async (params: {
       city: params.city?.trim() || 'Unknown',
       source: 'Manual',
       disposition: 'New',
-      owner: null,
-      ownerName: null,
+      owner: params.ownerId ? new mongoose.Types.ObjectId(params.ownerId) : null,
+      ownerName: params.ownerName || null,
       isInQueue: false,
       lastActivity: new Date(),
       lastActivityNote: 'Created automatically from BuildFlow dialer',
@@ -533,8 +533,20 @@ export const initiateCall = async (req: Request, res: Response, next: NextFuncti
       startedAt: callData.start_time ? new Date(callData.start_time) : new Date(),
     })
 
+    // Auto-assign the lead to the representative placing the call if it's currently unassigned
+    const leadUpdate: Record<string, unknown> = { lastActivity: new Date() }
+    if (!lead.owner) {
+      leadUpdate.owner = representative._id
+      leadUpdate.ownerName = representative.name
+      logger.info('Auto-assigning unassigned lead to representative on call initiation', {
+        leadId: String(lead._id),
+        representativeId: String(representative._id),
+        representativeName: representative.name,
+      })
+    }
+
     await Promise.all([
-      Lead.findByIdAndUpdate(lead._id, { lastActivity: new Date() }),
+      Lead.findByIdAndUpdate(lead._id, leadUpdate),
       User.findByIdAndUpdate(representative._id, {
         activeCallSid: callData.sid,
       }),
