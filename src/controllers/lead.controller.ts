@@ -673,6 +673,8 @@ const buildBulkUpdateDoc = (
     $set.ownerName = payload.ownerName ?? null
     $set.assignedAt = payload.assignedAt ?? null
     $set.isInQueue = payload.isInQueue ?? false
+    // Require acknowledgement when assigning to someone; clear it on unassign
+    $set.assignmentAcknowledged = payload.owner ? false : true
   }
 
   if (payload.disposition !== undefined) {
@@ -1852,6 +1854,8 @@ export const assignLead = async (req: Request, res: Response, next: NextFunction
         ownerName,
         assignedAt: owner ? new Date() : null,
         isInQueue: false,
+        // Require acknowledgement only when assigning to someone; clear it on unassign
+        assignmentAcknowledged: owner ? false : true,
       },
       { new: true }
     )
@@ -1893,6 +1897,90 @@ export const assignLead = async (req: Request, res: Response, next: NextFunction
     }
 
     return res.status(200).json({ success: true, data: lead })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const getPendingAssignments = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const leads = await Lead.find({
+      owner: req.user!.id,
+      assignmentAcknowledged: false,
+    })
+      .select('_id name phone city source disposition assignedAt')
+      .sort({ assignedAt: -1 })
+      .lean()
+
+    return res.status(200).json({
+      success: true,
+      data: leads.map((lead) => ({
+        leadId: String(lead._id),
+        leadName: lead.name,
+        phone: lead.phone,
+        city: lead.city,
+        source: lead.source,
+        disposition: lead.disposition,
+        assignedAt: lead.assignedAt,
+      })),
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const respondToAssignment = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { action } = req.body // 'accept' | 'decline'
+    if (!['accept', 'decline'].includes(action)) {
+      return res.status(400).json({ success: false, message: "action must be 'accept' or 'decline'" })
+    }
+
+    const lead = await Lead.findById(req.params.id)
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Lead not found' })
+    }
+
+    // Only the assigned rep (or a manager) can respond
+    if (req.user!.role === 'representative' && String(lead.owner) !== req.user!.id) {
+      return res.status(403).json({ success: false, message: 'You are not assigned to this lead' })
+    }
+
+    if (action === 'accept') {
+      await Lead.findByIdAndUpdate(lead._id, { $set: { assignmentAcknowledged: true } })
+      return res.status(200).json({ success: true, data: { leadId: String(lead._id), action: 'accepted' } })
+    }
+
+    // Decline — remove assignment
+    const before = lead.toObject()
+    await Lead.findByIdAndUpdate(lead._id, {
+      $set: {
+        owner: null,
+        ownerName: null,
+        assignedAt: null,
+        assignmentAcknowledged: true,
+      },
+    })
+
+    AuditLog.create({
+      actor: req.user!.id,
+      actorName: req.user!.name,
+      actorRole: req.user!.role,
+      action: 'lead.assignment_declined',
+      entity: 'Lead',
+      entityId: String(lead._id),
+      before,
+      after: { ...before, owner: null, ownerName: null, assignedAt: null, assignmentAcknowledged: true },
+    }).catch(() => null)
+
+    emitToTeam('all', 'lead:assigned', {
+      leadId: String(lead._id),
+      leadName: lead.name,
+      assignedTo: null,
+      assignedToName: null,
+    })
+
+    return res.status(200).json({ success: true, data: { leadId: String(lead._id), action: 'declined' } })
   } catch (err) {
     next(err)
   }

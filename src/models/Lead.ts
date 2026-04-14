@@ -55,6 +55,7 @@ export interface ILead extends Document {
   metaLeadId?: string | null
   googleClickId?: string | null
   linkedInLeadId?: string | null
+  assignmentAcknowledged?: boolean
   skipCount: number
   isInQueue: boolean
   isDuplicate: boolean
@@ -134,6 +135,7 @@ const LeadSchema = new Schema<ILead>(
     metaLeadId: { type: String, default: null },
     googleClickId: { type: String, default: null },
     linkedInLeadId: { type: String, default: null },
+    assignmentAcknowledged: { type: Boolean, default: true },
     skipCount: { type: Number, default: 0 },
     isInQueue: { type: Boolean, default: false },
     isDuplicate: { type: Boolean, default: false },

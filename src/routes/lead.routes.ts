@@ -22,6 +22,8 @@ import {
   createFollowUp,
   updateFollowUp,
   deleteFollowUp,
+  getPendingAssignments,
+  respondToAssignment,
 } from '../controllers/lead.controller'
 import { authenticate } from '../middleware/auth.middleware'
 import { requireManager, requireRole } from '../middleware/role.middleware'
@@ -38,6 +40,7 @@ router.post('/import', requireRole('manager', 'representative'), uploadImport, i
 router.post('/export', requireManager, requireFeature('exportLeads'), exportLeads)
 router.post('/bulk-delete', requireManager, requireFeature('bulkEdit'), [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()], validate, bulkDeleteLeads)
 router.get('/filters', getLeadFilters)
+router.get('/pending-assignments', getPendingAssignments)
 router.post('/lookup-by-phone', [body('phones').isArray()], validate, lookupLeadsByPhones)
 
 router.get('/', getLeads)
@@ -75,6 +78,13 @@ router.patch(
   [param('id').isMongoId(), body('userId').optional({ nullable: true }).isMongoId()],
   validate,
   assignLead
+)
+
+router.patch(
+  '/:id/assignment-response',
+  [param('id').isMongoId(), body('action').isIn(['accept', 'decline'])],
+  validate,
+  respondToAssignment
 )
 
 router.patch(
