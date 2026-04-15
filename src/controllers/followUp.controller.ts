@@ -101,8 +101,14 @@ export const getFollowUps = async (req: Request, res: Response, next: NextFuncti
     const limitNum = Math.min(200, parseInt(limit))
     const skip = (pageNum - 1) * limitNum
 
+    // Sort: pending first (status desc: "pending" > "completed" > "cancelled"),
+    // then by scheduledAt ascending so nearest follow-ups appear first.
+    // This ensures active follow-ups aren't pushed out of the page by old completed ones.
     const [followUps, total] = await Promise.all([
-      FollowUp.find(filter).sort({ scheduledAt: 1 }).skip(skip).limit(limitNum),
+      FollowUp.find(filter)
+        .sort({ status: -1, scheduledAt: 1 })
+        .skip(skip)
+        .limit(limitNum),
       FollowUp.countDocuments(filter),
     ])
 

@@ -412,7 +412,9 @@ const applyExotelLeadMetadata = async (
   const expectedNote = buildExotelLeadNote(record)
   let shouldSave = false
 
-  if (direction === 'incoming' && lead.source !== 'Direct') {
+  // Only set source to "Direct" for leads that don't already have a meaningful source.
+  // Never overwrite sources like Referral, Meta, Google, etc. that were set manually or via import.
+  if (direction === 'incoming' && !lead.source) {
     lead.source = 'Direct'
     shouldSave = true
   }
@@ -908,10 +910,17 @@ const syncSingleCallRecord = async (
   }
 
   if ((wasCreated || hasChanges) && outcome === 'Connected') {
-    await Lead.findByIdAndUpdate(call.lead, {
+    // Only auto-advance disposition from "New" → "Contacted/Open".
+    // Never overwrite dispositions that the rep already set manually
+    // (e.g. Failed, Qualified, Visit Done, etc.)
+    const leadForDisposition = await Lead.findById(call.lead).select('disposition').lean().exec()
+    const updatePayload: Record<string, unknown> = {
       lastActivity: endedAt || startedAt || new Date(),
-      disposition: 'Contacted/Open',
-    }).exec()
+    }
+    if (!leadForDisposition || leadForDisposition.disposition === 'New') {
+      updatePayload.disposition = 'Contacted/Open'
+    }
+    await Lead.findByIdAndUpdate(call.lead, updatePayload).exec()
   }
 
   // Always sync availability for terminal statuses to prevent stuck "in-call" states
