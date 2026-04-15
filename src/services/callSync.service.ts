@@ -484,6 +484,15 @@ const resolveRepresentative = (
   const fallback = users.find((user) => user.role === 'manager') || users[0] || null
 
   if (getDirection(record.Direction) === 'incoming') {
+    // For incoming calls, try to identify who answered using the AnsweredBy field
+    const answeredByPhone = normalizePhone(record.AnsweredBy)
+    if (answeredByPhone) {
+      const answeredByUser = users.find((user) => {
+        const userPhone = normalizePhone(user.phone)
+        return Boolean(userPhone && (userPhone === answeredByPhone || answeredByPhone.endsWith(userPhone) || userPhone.endsWith(answeredByPhone)))
+      })
+      if (answeredByUser) return answeredByUser
+    }
     return fallback
   }
 
@@ -798,6 +807,15 @@ const syncSingleCallRecord = async (
       ).exec()
 
       wasCreated = true
+
+      // Auto-assign unowned lead to the representative who handled the incoming call
+      if (direction === 'incoming' && representative && (!lead.owner || leadResult.created)) {
+        await Lead.findByIdAndUpdate(lead._id, {
+          owner: representative._id,
+          ownerName: representative.name,
+          assignedAt: startedAt || new Date(),
+        }).exec()
+      }
 
       if (leadResult.created && emitEvents) {
         emitIncomingLeadEvent(lead)
