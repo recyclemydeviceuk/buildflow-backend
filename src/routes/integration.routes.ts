@@ -4,11 +4,6 @@ import {
   getIntegrations,
   getIntegrationById,
   disconnectIntegration,
-  getMetaOAuthUrl,
-  handleMetaOAuthCallback,
-  subscribeMetaPages,
-  getMetaLeadForms,
-  fetchMetaLeadsToCRM,
   getGoogleAdsOAuthUrl,
   handleGoogleAdsOAuthCallback,
   getLinkedInOAuthUrl,
@@ -25,18 +20,11 @@ import { validate } from '../middleware/validate.middleware'
 
 const router = Router()
 
-router.get('/meta/callback', handleMetaOAuthCallback)
-
 router.use(authenticate, requireManager)
 
 router.get('/', getIntegrations)
 router.get('/:id', [param('id').isMongoId()], validate, getIntegrationById)
 router.delete('/:id', [param('id').isMongoId()], validate, disconnectIntegration)
-
-router.get('/meta/connect', getMetaOAuthUrl)
-router.post('/meta/subscribe', subscribeMetaPages)
-router.get('/meta/forms', getMetaLeadForms)
-router.post('/meta/fetch-leads', fetchMetaLeadsToCRM)
 
 router.get('/google-ads/connect', getGoogleAdsOAuthUrl)
 router.get('/google-ads/callback', handleGoogleAdsOAuthCallback)

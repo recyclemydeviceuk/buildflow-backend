@@ -1,21 +1,3 @@
-export interface MetaLeadgenWebhookPayload {
-  object: string
-  entry: Array<{
-    id: string
-    time: number
-    changes: Array<{
-      field: string
-      value: {
-        leadgen_id?: string
-        form_id?: string
-        page_id?: string
-        ad_id?: string
-        adgroup_id?: string
-      }
-    }>
-  }>
-}
-
 export interface WhatsAppMessagePayload {
   object: string
   entry: Array<{

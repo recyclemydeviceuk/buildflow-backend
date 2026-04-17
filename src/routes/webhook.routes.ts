@@ -5,8 +5,7 @@ import {
   handleExotelSmsStatus,
   handleExotelAnalyzeResult,
   handleWebsiteLead,
-  handleMetaLeadWebhook,
-  verifyMetaWebhook,
+  handleMakeLead,
   handleWhatsAppWebhook,
   verifyWhatsAppWebhook,
 } from '../controllers/webhook.controller'
@@ -27,8 +26,7 @@ router.post('/exotel/analyze', handleExotelAnalyzeResult)
 
 router.post('/website/lead', handleWebsiteLead)
 
-router.get('/meta', verifyMetaWebhook)
-router.post('/meta', handleMetaLeadWebhook)
+router.post('/make/lead', handleMakeLead)
 
 router.get('/whatsapp', verifyWhatsAppWebhook)
 router.post('/whatsapp', handleWhatsAppWebhook)

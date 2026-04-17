@@ -3,11 +3,11 @@ import { emitToTeam } from '../config/socket'
 import { processExotelCallStatus } from '../webhooks/exotel.webhook'
 import { processExoVoiceAnalyzeResult } from '../webhooks/exotelAnalyze.webhook'
 import { processExotelSmsStatus } from '../webhooks/exotelSms.webhook'
-import { processMetaLeadgen } from '../webhooks/meta.webhook'
-import { verifyMetaWebhookSignature } from '../services/meta.service'
 import { processWebsiteLead } from '../webhooks/website.webhook'
 import { ExotelCallStatusPayload, ExotelSMSStatusCallbackPayload, ExoVoiceAnalyzeWebhookPayload } from '../types/exotel.types'
 import { logger } from '../utils/logger'
+
+export { handleMakeLead } from '../webhooks/make.webhook'
 
 const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
   const normalizeFieldEntry = (key: string, value: unknown) => {
@@ -307,55 +307,6 @@ export const handleWebsiteLead = async (req: Request, res: Response, next: NextF
   } catch (err) {
     next(err)
   }
-}
-
-export const handleMetaLeadWebhook = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const signature = req.get('x-hub-signature-256') || undefined
-    const isValidSignature = verifyMetaWebhookSignature(req.rawBody, signature, process.env.META_APP_SECRET)
-
-    if (!isValidSignature) {
-      return res.status(401).json({ success: false, message: 'Invalid Meta webhook signature' })
-    }
-
-    const { object, entry } = req.body
-
-    if (object !== 'page') {
-      return res.status(200).send('EVENT_RECEIVED')
-    }
-
-    for (const pageEntry of entry || []) {
-      for (const change of pageEntry.changes || []) {
-        if (change.field === 'leadgen') {
-          const leadgenId = change.value?.leadgen_id
-          const formId = change.value?.form_id
-
-          if (leadgenId) {
-            await processMetaLeadgen(leadgenId, formId)
-            emitToTeam('all', 'meta:lead_received', { leadgenId, formId })
-          }
-        }
-      }
-    }
-
-    return res.status(200).send('EVENT_RECEIVED')
-  } catch (err) {
-    next(err)
-  }
-}
-
-export const verifyMetaWebhook = (req: Request, res: Response) => {
-  const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN
-
-  const mode = req.query['hub.mode']
-  const token = req.query['hub.verify_token']
-  const challenge = req.query['hub.challenge']
-
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge)
-  }
-
-  return res.status(403).json({ success: false, message: 'Verification failed' })
 }
 
 export const handleWhatsAppWebhook = async (req: Request, res: Response, next: NextFunction) => {
