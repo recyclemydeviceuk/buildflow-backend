@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from 'express'
 import { Lead } from '../models/Lead'
+import { DeletedLeadPhone } from '../models/DeletedLeadPhone'
+import { DeletedLeadExternalId } from '../models/DeletedLeadExternalId'
 import { emitToTeam } from '../config/socket'
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
@@ -65,6 +67,35 @@ export const handleMakeLead = async (req: Request, res: Response, next: NextFunc
       (phoneTail
         ? await Lead.findOne({ phone: { $regex: `${phoneTail}$` } }).exec()
         : null)
+
+    // If the lead doesn't exist in BuildFlow anymore, check whether it was
+    // previously deleted. Deleted leads should NOT come back through the
+    // Make.com bridge — the user explicitly removed them.
+    if (!existingLead) {
+      const tombstonedByExternalId = externalId
+        ? await DeletedLeadExternalId.findOne({ externalId }).lean()
+        : null
+      const tombstonedByPhone = phoneTail
+        ? await DeletedLeadPhone.findOne({ phone: phoneTail }).lean()
+        : null
+
+      if (tombstonedByExternalId || tombstonedByPhone) {
+        logger.info('Make lead suppressed (previously deleted)', {
+          externalId,
+          phoneTail,
+          reason: tombstonedByExternalId ? 'externalId' : 'phone',
+        })
+        return res.status(200).json({
+          success: true,
+          data: {
+            suppressed: true,
+            reason: tombstonedByExternalId
+              ? 'lead_previously_deleted_by_external_id'
+              : 'lead_previously_deleted_by_phone',
+          },
+        })
+      }
+    }
 
     const activityNote = formLabel
       ? `${source} lead form: ${formLabel}`

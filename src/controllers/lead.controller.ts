@@ -9,6 +9,7 @@ import { Reminder } from '../models/Reminder'
 import { Call } from '../models/Call'
 import { FollowUp } from '../models/FollowUp'
 import { DeletedLeadPhone } from '../models/DeletedLeadPhone'
+import { DeletedLeadExternalId } from '../models/DeletedLeadExternalId'
 import { LEAD_SOURCES } from '../config/constants'
 import { Settings } from '../models/Settings'
 import { sendLeadAssignedEmail } from '../services/ses.service'
@@ -651,6 +652,27 @@ const blockDeletedPhones = async (phones: string[]): Promise<void> => {
       updateOne: {
         filter: { phone },
         update: { $set: { phone, deletedAt: new Date() } },
+        upsert: true,
+      },
+    }))
+  )
+}
+
+const blockDeletedExternalIds = async (
+  entries: Array<{ externalId?: string | null; source?: string | null }>
+): Promise<void> => {
+  const unique = new Map<string, string | null>()
+  for (const entry of entries) {
+    const id = (entry.externalId || '').trim()
+    if (!id) continue
+    if (!unique.has(id)) unique.set(id, entry.source || null)
+  }
+  if (!unique.size) return
+  await DeletedLeadExternalId.bulkWrite(
+    Array.from(unique.entries()).map(([externalId, source]) => ({
+      updateOne: {
+        filter: { externalId },
+        update: { $set: { externalId, source, deletedAt: new Date() } },
         upsert: true,
       },
     }))
@@ -1720,6 +1742,12 @@ export const deleteLead = async (req: Request, res: Response, next: NextFunction
     // Block phone from being auto-recreated by Exotel webhooks / call sync
     await blockDeletedPhones([lead.phone, lead.alternatePhone].filter(Boolean) as string[])
 
+    // Block Meta/Make externalId from being re-imported via the Make webhook
+    await blockDeletedExternalIds([
+      { externalId: lead.externalId, source: lead.source },
+      { externalId: lead.metaLeadId, source: lead.source || 'Meta' },
+    ])
+
     // Audit log is fire-and-forget — its failure must not roll back an already-deleted lead
     AuditLog.create({
       actor: req.user!.id,
@@ -1776,6 +1804,13 @@ export const bulkDeleteLeads = async (req: Request, res: Response, next: NextFun
       [lead.phone, lead.alternatePhone].filter(Boolean) as string[]
     )
     await blockDeletedPhones(phonesToBlock)
+
+    // Block externalIds from being re-imported via the Make webhook
+    const externalIdsToBlock = accessibleLeads.flatMap((lead) => [
+      { externalId: lead.externalId, source: lead.source },
+      { externalId: lead.metaLeadId, source: lead.source || 'Meta' },
+    ])
+    await blockDeletedExternalIds(externalIdsToBlock)
 
     // Audit log is fire-and-forget — its failure must not affect the success response
     AuditLog.insertMany(
