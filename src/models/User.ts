@@ -15,6 +15,9 @@ export interface IUser extends Document {
   avatarUrl?: string | null
   isActive: boolean
   lastLoginAt?: Date
+  // Timestamp of the last time this rep was auto-routed a lead.
+  // Used by the round-robin algorithm to pick the rep who has waited longest.
+  lastAssignedLeadAt?: Date | null
   notificationPrefs?: NotificationPreferences
   createdAt: Date
   updatedAt: Date
@@ -55,6 +58,7 @@ const UserSchema = new Schema<IUser>(
     avatarUrl: { type: String, default: null },
     isActive: { type: Boolean, default: true },
     lastLoginAt: { type: Date },
+    lastAssignedLeadAt: { type: Date, default: null },
     notificationPrefs: { type: NotificationPrefsSchema, default: () => ({ ...DEFAULT_NOTIFICATION_PREFS }) },
   },
   { timestamps: true }
@@ -63,5 +67,7 @@ const UserSchema = new Schema<IUser>(
 UserSchema.index({ email: 1 })
 UserSchema.index({ role: 1 })
 UserSchema.index({ isActive: 1 })
+// Compound index powering the round-robin ordering query.
+UserSchema.index({ role: 1, isActive: 1, lastAssignedLeadAt: 1 })
 
 export const User: Model<IUser> = mongoose.model<IUser>('User', UserSchema)

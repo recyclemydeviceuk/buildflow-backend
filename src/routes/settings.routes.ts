@@ -3,6 +3,7 @@ import {
   getAppConfig,
   getSettings,
   updateLeadRouting,
+  updateCityAssignmentRules,
   updateLeadFields,
   updateCities,
   updateSources,
@@ -43,6 +44,7 @@ router.get('/app-config', getAppConfig)
 
 router.get('/', requireManager, getSettings)
 router.patch('/lead-routing', requireManager, updateLeadRouting)
+router.patch('/city-assignment-rules', requireManager, updateCityAssignmentRules)
 router.patch('/lead-fields', requireManager, updateLeadFields)
 router.patch('/cities', requireManager, updateCities)
 router.patch('/sources', requireManager, updateSources)

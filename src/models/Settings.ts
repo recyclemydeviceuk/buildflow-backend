@@ -2,12 +2,19 @@ import mongoose, { Schema, Document, Model } from 'mongoose'
 import { DEFAULT_LEAD_FIELD_DEFINITIONS, type LeadFieldDefinition } from '../utils/leadFields'
 import { DEFAULT_FEATURE_CONTROLS } from '../utils/featureControls'
 
+export interface ICityAssignmentRule {
+  cities: string[]
+  userId: mongoose.Types.ObjectId
+  userName: string
+}
+
 export interface ISettings extends Document {
   leadRouting: {
     mode: 'manual' | 'auto'
     offerTimeout: number
     skipLimit: number
     autoEscalate: boolean
+    cityAssignmentRules: ICityAssignmentRule[]
   }
   leadFields: {
     plotSizeUnits: string[]
@@ -46,6 +53,15 @@ export interface ISettings extends Document {
   updatedAt: Date
 }
 
+const CityAssignmentRuleSchema = new Schema<ICityAssignmentRule>(
+  {
+    cities: { type: [String], default: [] },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    userName: { type: String, required: true, trim: true },
+  },
+  { _id: true }
+)
+
 const LeadFieldSchema = new Schema<LeadFieldDefinition>(
   {
     key: { type: String, required: true },
@@ -68,6 +84,7 @@ const SettingsSchema = new Schema<ISettings>(
       offerTimeout: { type: Number, default: 60 },
       skipLimit: { type: Number, default: 3 },
       autoEscalate: { type: Boolean, default: false },
+      cityAssignmentRules: { type: [CityAssignmentRuleSchema], default: [] },
     },
     leadFields: {
       plotSizeUnits: { type: [String], default: ['sq ft', 'sq yards', 'acres', 'guntha'] },

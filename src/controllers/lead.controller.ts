@@ -14,6 +14,7 @@ import { LEAD_SOURCES } from '../config/constants'
 import { Settings } from '../models/Settings'
 import { sendLeadAssignedEmail } from '../services/ses.service'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 import { computeReminderStatus } from '../services/reminder.service'
 import { normalizeNotificationPrefs } from '../utils/notificationPrefs'
 import { normalizeLeadFields, type LeadFieldDefinition, type LeadFieldKey } from '../utils/leadFields'
@@ -1663,6 +1664,11 @@ export const createLead = async (req: Request, res: Response, next: NextFunction
     })
 
     void notifyNewLeadCreated(lead).catch(() => null)
+    // If a manager created this lead unassigned and round-robin mode is on,
+    // auto-route it now. Reps always self-own so this is a no-op for them.
+    if (!isRepresentativeCreator) {
+      void routeLead(lead._id).catch(() => null)
+    }
 
     return res.status(201).json({ success: true, data: lead })
   } catch (err) {

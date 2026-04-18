@@ -10,6 +10,7 @@ import { syncExotelCallHistory } from '../services/callSync.service'
 import { S3_RECORDINGS_PREFIX } from '../config/constants'
 import { logger } from '../utils/logger'
 import { notifyMissedCall, notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 
 const parseIstDate = (value?: string | null): Date | null => {
   if (!value) return null
@@ -177,6 +178,11 @@ const findOrCreateManagedIncomingLead = async (
   if (created) {
     emitIncomingLeadEvent(lead)
     void notifyNewLeadCreated(lead).catch(() => null)
+    // For newly-created leads from incoming Exotel calls, fire round-robin
+    // routing. If the answerer-based assignment later in the webhook owns the
+    // lead first, routeLead will see `lead.owner` set and no-op. If the call
+    // was missed (no answerer), this ensures the lead isn't left orphaned.
+    void routeLead(lead._id).catch(() => null)
   }
 
   return { lead, created }
@@ -654,6 +660,10 @@ const findOrCreateExotelLead = async (
   if (created) {
     emitIncomingLeadEvent(lead)
     void notifyNewLeadCreated(lead).catch(() => null)
+    // Same rationale as the managed webhook path: fire round-robin for newly
+    // created leads. Routing is a no-op if the lead was assigned by the
+    // answerer-based flow or if routing mode is 'manual'.
+    void routeLead(lead._id).catch(() => null)
   }
 
   return { lead, created }

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import bcrypt from 'bcryptjs'
+import mongoose from 'mongoose'
 import { Settings } from '../models/Settings'
 import { User } from '../models/User'
 import { BCRYPT_SALT_ROUNDS } from '../config/constants'
@@ -41,6 +42,12 @@ const serializeSettings = (settings: any) => {
       offerTimeout: rawSettings?.leadRouting?.offerTimeout ?? 60,
       skipLimit: rawSettings?.leadRouting?.skipLimit ?? 0,
       autoEscalate: rawSettings?.leadRouting?.autoEscalate ?? false,
+      cityAssignmentRules: (rawSettings?.leadRouting?.cityAssignmentRules || []).map((rule: any) => ({
+        _id: rule?._id ? String(rule._id) : undefined,
+        cities: Array.isArray(rule?.cities) ? rule.cities : [],
+        userId: rule?.userId ? String(rule.userId) : '',
+        userName: rule?.userName || '',
+      })),
     },
     featureControls,
   }
@@ -186,17 +193,62 @@ export const updateSmsTemplates = async (req: Request, res: Response, next: Next
 
 export const updateLeadRouting = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { offerTimeout, skipLimit } = req.body
+    const { mode, offerTimeout, skipLimit } = req.body
+
+    // Honor the caller's mode choice. Defaults to 'manual' if anything invalid
+    // comes in, so we never flip an unsuspecting workspace into auto by accident.
+    const nextMode: 'manual' | 'auto' = mode === 'auto' ? 'auto' : 'manual'
 
     const settings = await Settings.findOneAndUpdate(
       {},
       {
-        'leadRouting.mode': 'manual',
+        'leadRouting.mode': nextMode,
         'leadRouting.offerTimeout': Number.isFinite(Number(offerTimeout)) ? Number(offerTimeout) : 60,
         'leadRouting.skipLimit': Number.isFinite(Number(skipLimit)) ? Number(skipLimit) : 0,
         'leadRouting.autoEscalate': false,
-        'featureControls.manualAssignment': true,
+        // Manual assignment feature flag stays in sync with routing mode:
+        // auto mode implies reps shouldn't be manually reassigning by default.
+        'featureControls.manualAssignment': nextMode === 'manual',
       },
+      { new: true, upsert: true }
+    )
+
+    return res.status(200).json({ success: true, data: serializeSettings(settings) })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const updateCityAssignmentRules = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const incoming = Array.isArray(req.body?.rules) ? req.body.rules : []
+
+    // Normalize + validate each rule. We resolve the user's display name on
+    // the server so the frontend never has to join User + Settings just to
+    // render the rule list.
+    const resolved: Array<{ cities: string[]; userId: any; userName: string }> = []
+    for (const raw of incoming) {
+      const cities: string[] = Array.isArray(raw?.cities)
+        ? raw.cities.map((c: any) => String(c || '').trim()).filter(Boolean)
+        : []
+      const userId = typeof raw?.userId === 'string' ? raw.userId.trim() : ''
+      if (!cities.length || !userId || !mongoose.Types.ObjectId.isValid(userId)) continue
+
+      const user = await User.findById(userId).select('name role isActive').lean()
+      if (!user) continue
+      // Only representatives can receive routed leads. Silently skip invalid rows.
+      if (user.role !== 'representative' || user.isActive === false) continue
+
+      resolved.push({
+        cities,
+        userId: new mongoose.Types.ObjectId(userId),
+        userName: user.name,
+      })
+    }
+
+    const settings = await Settings.findOneAndUpdate(
+      {},
+      { 'leadRouting.cityAssignmentRules': resolved },
       { new: true, upsert: true }
     )
 

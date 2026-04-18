@@ -5,6 +5,7 @@ import { DeletedLeadExternalId } from '../models/DeletedLeadExternalId'
 import { emitToTeam } from '../config/socket'
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 
 interface MakeLeadPayload {
   name?: string
@@ -157,6 +158,10 @@ export const handleMakeLead = async (req: Request, res: Response, next: NextFunc
     })
 
     void notifyNewLeadCreated(lead).catch(() => null)
+    // Fire-and-forget auto-routing. If Settings.leadRouting.mode === 'auto',
+    // this will assign the lead to a rep per the city rules / round-robin.
+    // If mode is manual (default), this is a no-op.
+    void routeLead(lead._id).catch(() => null)
 
     logger.info('Make lead created', {
       leadId: String(lead._id),

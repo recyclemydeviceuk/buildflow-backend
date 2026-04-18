@@ -21,7 +21,7 @@ export const refreshReminderStatuses = async (): Promise<number> => {
     { status: 1, dueAt: 1 }
   ).lean()
 
-  const ops: Array<{ updateOne: { filter: { _id: any }; update: { $set: { status: string } } } }> = []
+  const ops: any[] = []
   for (const reminder of pending) {
     const newStatus = computeReminderStatus(reminder.dueAt as Date)
     if (newStatus !== reminder.status) {
