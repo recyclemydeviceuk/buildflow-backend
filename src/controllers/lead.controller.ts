@@ -1390,13 +1390,16 @@ export const getLeadFilters = async (req: Request, res: Response, next: NextFunc
       ? settings.cities
       : dbCities.filter(c => c && c !== 'Unknown')
 
-    // If settings has configured sources, use those as the base; always merge in any DB sources not yet listed
-    const baseSources = (settings?.sources && settings.sources.length > 0)
-      ? settings.sources
-      : [...LEAD_SOURCES]
-    const allSources = Array.from(
-      new Set([...baseSources, ...dbSources.filter((s): s is string => Boolean(s))])
-    ).sort()
+    // Sources — Settings is the single source of truth.
+    // If a manager curated the sources list, respect it strictly. Don't auto-resurrect
+    // values that only exist on legacy/orphaned leads (e.g. mistaken entries like a
+    // location name). Fallback to the LEAD_SOURCES constant only when no settings
+    // entry exists at all.
+    const allSources = (settings?.sources && settings.sources.length > 0)
+      ? [...settings.sources].sort()
+      : Array.from(
+          new Set([...LEAD_SOURCES, ...dbSources.filter((s): s is string => Boolean(s))])
+        ).sort()
 
     return res.status(200).json({
       success: true,
