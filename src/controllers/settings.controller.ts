@@ -42,12 +42,22 @@ const serializeSettings = (settings: any) => {
       offerTimeout: rawSettings?.leadRouting?.offerTimeout ?? 60,
       skipLimit: rawSettings?.leadRouting?.skipLimit ?? 0,
       autoEscalate: rawSettings?.leadRouting?.autoEscalate ?? false,
-      cityAssignmentRules: (rawSettings?.leadRouting?.cityAssignmentRules || []).map((rule: any) => ({
-        _id: rule?._id ? String(rule._id) : undefined,
-        cities: Array.isArray(rule?.cities) ? rule.cities : [],
-        userId: rule?.userId ? String(rule.userId) : '',
-        userName: rule?.userName || '',
-      })),
+      cityAssignmentRules: (rawSettings?.leadRouting?.cityAssignmentRules || []).map((rule: any) => {
+        // Normalize legacy single-rep rules into the new array shape so the
+        // client only ever deals with userIds[] / userNames[].
+        const ids: string[] = Array.isArray(rule?.userIds) && rule.userIds.length
+          ? rule.userIds.map((id: any) => String(id)).filter(Boolean)
+          : rule?.userId ? [String(rule.userId)] : []
+        const names: string[] = Array.isArray(rule?.userNames) && rule.userNames.length
+          ? rule.userNames.map((n: any) => String(n))
+          : rule?.userName ? [String(rule.userName)] : []
+        return {
+          _id: rule?._id ? String(rule._id) : undefined,
+          cities: Array.isArray(rule?.cities) ? rule.cities : [],
+          userIds: ids,
+          userNames: names,
+        }
+      }),
     },
     featureControls,
   }
@@ -223,32 +233,65 @@ export const updateCityAssignmentRules = async (req: Request, res: Response, nex
   try {
     const incoming = Array.isArray(req.body?.rules) ? req.body.rules : []
 
-    // Normalize + validate each rule. We resolve the user's display name on
-    // the server so the frontend never has to join User + Settings just to
-    // render the rule list.
-    const resolved: Array<{ cities: string[]; userId: any; userName: string }> = []
+    // Normalize + validate each rule. Each rule maps a set of cities to one
+    // OR more reps. When multiple reps are listed the router fairly rotates
+    // among them. We resolve display names server-side so the client never
+    // needs to join User + Settings just to render the picker.
+    const resolved: Array<{
+      cities: string[]
+      userIds: mongoose.Types.ObjectId[]
+      userNames: string[]
+    }> = []
     for (const raw of incoming) {
       const cities: string[] = Array.isArray(raw?.cities)
         ? raw.cities.map((c: any) => String(c || '').trim()).filter(Boolean)
         : []
-      const userId = typeof raw?.userId === 'string' ? raw.userId.trim() : ''
-      if (!cities.length || !userId || !mongoose.Types.ObjectId.isValid(userId)) continue
 
-      const user = await User.findById(userId).select('name role isActive').lean()
-      if (!user) continue
-      // Only representatives can receive routed leads. Silently skip invalid rows.
-      if (user.role !== 'representative' || user.isActive === false) continue
+      // Accept either the new multi-rep shape (userIds[]) or the legacy
+      // single-rep shape (userId). Coerce both into an id list.
+      const rawIds: string[] = Array.isArray(raw?.userIds)
+        ? raw.userIds.map((id: any) => String(id || '').trim()).filter(Boolean)
+        : typeof raw?.userId === 'string' && raw.userId.trim()
+        ? [raw.userId.trim()]
+        : []
 
-      resolved.push({
-        cities,
-        userId: new mongoose.Types.ObjectId(userId),
-        userName: user.name,
+      if (!cities.length || rawIds.length === 0) continue
+
+      const validIds = rawIds.filter((id) => mongoose.Types.ObjectId.isValid(id))
+      if (validIds.length === 0) continue
+
+      // Resolve all referenced users in one round-trip and keep only the
+      // active representatives. Preserve the order the caller sent.
+      const users = await User.find({
+        _id: { $in: validIds.map((id) => new mongoose.Types.ObjectId(id)) },
+        role: 'representative',
+        isActive: true,
       })
+        .select('_id name')
+        .lean()
+      const byId = new Map<string, { _id: any; name: string }>()
+      for (const u of users) byId.set(String(u._id), { _id: u._id, name: u.name })
+
+      const userIds: mongoose.Types.ObjectId[] = []
+      const userNames: string[] = []
+      for (const id of validIds) {
+        const u = byId.get(id)
+        if (!u) continue
+        userIds.push(u._id)
+        userNames.push(u.name)
+      }
+      if (userIds.length === 0) continue
+
+      resolved.push({ cities, userIds, userNames })
     }
 
+    // Write the new shape AND clear the legacy single-rep fields across all
+    // rules so stale values can never leak back into routing.
     const settings = await Settings.findOneAndUpdate(
       {},
-      { 'leadRouting.cityAssignmentRules': resolved },
+      {
+        $set: { 'leadRouting.cityAssignmentRules': resolved },
+      },
       { new: true, upsert: true }
     )
 

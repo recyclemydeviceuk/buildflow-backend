@@ -34,29 +34,42 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
     const leadCity = (lead.city || '').trim()
     const leadCityLower = leadCity.toLowerCase()
 
-    // 1) City-rule check — first matching rule wins
+    // 1) City-rule check — first matching rule wins.
+    // A rule can list one or many reps. If multiple, we round-robin WITHIN the
+    // rule by picking whichever of those reps has waited longest.
     let chosenRep: { _id: mongoose.Types.ObjectId; name: string } | null = null
     if (leadCity) {
       for (const rule of rules) {
         const ruleCities = (rule.cities || []).map((c: string) => String(c).trim().toLowerCase())
-        if (ruleCities.includes(leadCityLower)) {
-          const candidate = await User.findOne({
-            _id: rule.userId,
-            role: 'representative',
-            isActive: true,
+        if (!ruleCities.includes(leadCityLower)) continue
+
+        // Support both new multi-rep shape and legacy single-rep shape.
+        const ruleUserIds: any[] = Array.isArray((rule as any).userIds) && (rule as any).userIds.length
+          ? (rule as any).userIds
+          : (rule as any).userId
+          ? [(rule as any).userId]
+          : []
+        if (ruleUserIds.length === 0) continue
+
+        const candidate = await User.findOne({
+          _id: { $in: ruleUserIds },
+          role: 'representative',
+          isActive: true,
+        })
+          .sort({ lastAssignedLeadAt: 1, createdAt: 1 })
+          .select('_id name')
+          .lean()
+
+        if (candidate) {
+          chosenRep = { _id: candidate._id as mongoose.Types.ObjectId, name: candidate.name }
+          logger.info('Lead routed via city rule', {
+            leadId: String(lead._id),
+            city: leadCity,
+            poolSize: ruleUserIds.length,
+            repId: String(candidate._id),
+            repName: candidate.name,
           })
-            .select('_id name')
-            .lean()
-          if (candidate) {
-            chosenRep = { _id: candidate._id as mongoose.Types.ObjectId, name: candidate.name }
-            logger.info('Lead routed via city rule', {
-              leadId: String(lead._id),
-              city: leadCity,
-              repId: String(candidate._id),
-              repName: candidate.name,
-            })
-            break
-          }
+          break
         }
       }
     }

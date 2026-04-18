@@ -4,8 +4,14 @@ import { DEFAULT_FEATURE_CONTROLS } from '../utils/featureControls'
 
 export interface ICityAssignmentRule {
   cities: string[]
-  userId: mongoose.Types.ObjectId
-  userName: string
+  // New, preferred shape: multiple reps per rule. When more than one rep is
+  // listed the lead rotates among them (fair round-robin within the rule).
+  userIds: mongoose.Types.ObjectId[]
+  userNames: string[]
+  // Legacy single-rep fields kept for backward compatibility with rules saved
+  // before the multi-rep upgrade. Always promoted to the arrays on read.
+  userId?: mongoose.Types.ObjectId | null
+  userName?: string | null
 }
 
 export interface ISettings extends Document {
@@ -56,8 +62,11 @@ export interface ISettings extends Document {
 const CityAssignmentRuleSchema = new Schema<ICityAssignmentRule>(
   {
     cities: { type: [String], default: [] },
-    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-    userName: { type: String, required: true, trim: true },
+    userIds: { type: [{ type: Schema.Types.ObjectId, ref: 'User' }], default: [] },
+    userNames: { type: [String], default: [] },
+    // Legacy single-rep fields — retained so pre-upgrade documents still parse.
+    userId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    userName: { type: String, default: null, trim: true },
   },
   { _id: true }
 )
