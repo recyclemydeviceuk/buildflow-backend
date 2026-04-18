@@ -12,19 +12,31 @@ export const computeReminderStatus = (dueAt: Date): 'upcoming' | 'due_soon' | 'o
 }
 
 export const refreshReminderStatuses = async (): Promise<number> => {
-  const pending = await Reminder.find({ status: { $in: ['upcoming', 'due_soon', 'overdue'] } })
-  let updated = 0
+  // Fetch only what we need (id, status, dueAt) and compute the delta in memory,
+  // then flush all updates in a single bulkWrite. Previously this function did
+  // N serial save() calls which made every GET /reminders scale linearly with
+  // the number of pending reminders — catastrophic once counts grow.
+  const pending = await Reminder.find(
+    { status: { $in: ['upcoming', 'due_soon', 'overdue'] } },
+    { status: 1, dueAt: 1 }
+  ).lean()
 
+  const ops: Array<{ updateOne: { filter: { _id: any }; update: { $set: { status: string } } } }> = []
   for (const reminder of pending) {
-    const newStatus = computeReminderStatus(reminder.dueAt)
+    const newStatus = computeReminderStatus(reminder.dueAt as Date)
     if (newStatus !== reminder.status) {
-      reminder.status = newStatus
-      await reminder.save()
-      updated++
+      ops.push({
+        updateOne: {
+          filter: { _id: reminder._id },
+          update: { $set: { status: newStatus } },
+        },
+      })
     }
   }
 
-  return updated
+  if (ops.length === 0) return 0
+  await Reminder.bulkWrite(ops, { ordered: false })
+  return ops.length
 }
 
 export const sendDueSoonNotifications = async (): Promise<void> => {

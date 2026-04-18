@@ -27,7 +27,9 @@ const syncLeadNextFollowUp = async (leadId: string) => {
 
 export const getReminders = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await refreshReminderStatuses()
+    // Don't block the response on status refresh — run it in the background.
+    // The serializer below computes the live status from dueAt on the fly anyway.
+    void refreshReminderStatuses().catch(() => null)
     const { status, leadId, page = '1', limit = '50' } = req.query as Record<string, string>
 
     const filter: Record<string, unknown> = {}
@@ -57,7 +59,7 @@ export const getReminders = async (req: Request, res: Response, next: NextFuncti
 
 export const getReminderById = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await refreshReminderStatuses()
+    void refreshReminderStatuses().catch(() => null)
     const reminder = await Reminder.findById(req.params.id)
     if (!reminder) {
       return res.status(404).json({ success: false, message: 'Reminder not found' })
