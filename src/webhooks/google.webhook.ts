@@ -24,33 +24,47 @@ export const processGoogleLeadForm = async (gclid: string, formData: Record<stri
         ? await Lead.findOne({ phone: { $regex: `${normalizedPhone.slice(-10)}$` } }).exec()
         : null)
 
-    const lead =
-      existingLead ||
-      (await Lead.create({
-        name, phone, email, city,
-        source: 'Google ADS',
-        disposition: 'New',
-        googleClickId: gclid,
-        lastActivity: new Date(),
-      }))
+    // If the lead already exists, don't touch any rep-curated fields.
+    // Only record activity. See website.webhook.ts for the same pattern.
+    if (existingLead) {
+      await Lead.updateOne(
+        { _id: existingLead._id },
+        { $set: { lastActivity: new Date() } }
+      )
+      emitToTeam('all', 'lead:incoming', {
+        lead: {
+          id: existingLead._id,
+          name: existingLead.name,
+          phone: existingLead.phone,
+          city: existingLead.city,
+          source: existingLead.source,
+          owner: existingLead.owner || null,
+        },
+      })
+      logger.info('Google webhook — lead already exists, only lastActivity bumped', {
+        leadId: String(existingLead._id),
+      })
+      return
+    }
 
-    lead.name = lead.name || name
-    lead.phone = lead.phone || phone
-    lead.email = lead.email || email
-    lead.city = lead.city && lead.city !== 'Unknown' ? lead.city : city
-    lead.source = 'Google ADS'
-    lead.googleClickId = gclid || lead.googleClickId || null
-    lead.lastActivity = new Date()
-    lead.isInQueue = false
-    await lead.save()
+    // Truly new lead.
+    const lead = await Lead.create({
+      name,
+      phone,
+      email,
+      city,
+      source: 'Google ADS',
+      disposition: 'New',
+      googleClickId: gclid,
+      lastActivity: new Date(),
+      isInQueue: false,
+    })
 
     emitToTeam('all', 'lead:incoming', {
       lead: { id: lead._id, name: lead.name, phone: lead.phone, city: lead.city, source: 'Google ADS', owner: lead.owner || null },
     })
 
-    if (!existingLead) {
-      void notifyNewLeadCreated(lead).catch(() => null)
-    }
+    void notifyNewLeadCreated(lead).catch(() => null)
 
     logger.info('Google lead created', { leadId: lead._id, gclid })
   } catch (err) {

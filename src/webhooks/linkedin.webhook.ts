@@ -25,33 +25,47 @@ export const processLinkedInLead = async (leadData: Record<string, string>): Pro
         ? await Lead.findOne({ phone: { $regex: `${normalizedPhone.slice(-10)}$` } }).exec()
         : null)
 
-    const lead =
-      existingLead ||
-      (await Lead.create({
-        name, phone: phone || 'N/A', email, city,
-        source: 'LinkedIn',
-        disposition: 'New',
-        linkedInLeadId: leadId,
-        lastActivity: new Date(),
-      }))
+    // If the lead already exists, don't touch any rep-curated fields.
+    // Only record activity. See website.webhook.ts for the same pattern.
+    if (existingLead) {
+      await Lead.updateOne(
+        { _id: existingLead._id },
+        { $set: { lastActivity: new Date() } }
+      )
+      emitToTeam('all', 'lead:incoming', {
+        lead: {
+          id: existingLead._id,
+          name: existingLead.name,
+          phone: existingLead.phone,
+          city: existingLead.city,
+          source: existingLead.source,
+          owner: existingLead.owner || null,
+        },
+      })
+      logger.info('LinkedIn webhook — lead already exists, only lastActivity bumped', {
+        leadId: String(existingLead._id),
+      })
+      return
+    }
 
-    lead.name = lead.name || name
-    lead.phone = lead.phone || phone || 'N/A'
-    lead.email = lead.email || email
-    lead.city = lead.city && lead.city !== 'Unknown' ? lead.city : city
-    lead.source = 'LinkedIn'
-    lead.linkedInLeadId = leadId || lead.linkedInLeadId || null
-    lead.lastActivity = new Date()
-    lead.isInQueue = false
-    await lead.save()
+    // Truly new lead.
+    const lead = await Lead.create({
+      name,
+      phone: phone || 'N/A',
+      email,
+      city,
+      source: 'LinkedIn',
+      disposition: 'New',
+      linkedInLeadId: leadId,
+      lastActivity: new Date(),
+      isInQueue: false,
+    })
 
     emitToTeam('all', 'lead:incoming', {
       lead: { id: lead._id, name: lead.name, phone: lead.phone, city: lead.city, source: 'LinkedIn', owner: lead.owner || null },
     })
 
-    if (!existingLead) {
-      void notifyNewLeadCreated(lead).catch(() => null)
-    }
+    void notifyNewLeadCreated(lead).catch(() => null)
 
     logger.info('LinkedIn lead created', { leadId: lead._id })
   } catch (err) {
