@@ -573,10 +573,26 @@ const runTerminalPostProcessing = async (
   options: { callSid: string; recordingUrl?: string | null; outcome?: string | null }
 ) => {
   if (options.outcome === 'Connected') {
-    await Lead.findByIdAndUpdate(
-      { _id: call.lead, disposition: 'New' },
-      { lastActivity: new Date(), disposition: 'Contacted/Open' }
-    )
+    // CRITICAL: previously this used Lead.findByIdAndUpdate with an object as the
+    // first arg, which only extracts `_id` and silently ignores the `disposition`
+    // filter. Result: every terminal "Connected" call was stomping the rep's
+    // manually-chosen disposition (Qualified/Failed/etc.) back to Contacted/Open.
+    //
+    // The fix is a single atomic aggregation-pipeline update that:
+    //   • always bumps lastActivity, and
+    //   • advances disposition from "New" → "Contacted/Open" ONLY IF it is still
+    //     "New". Any rep-set disposition is preserved via the $cond's else branch
+    //     which re-assigns the field to its current value (a no-op).
+    await Lead.updateOne({ _id: call.lead }, [
+      {
+        $set: {
+          lastActivity: new Date(),
+          disposition: {
+            $cond: [{ $eq: ['$disposition', 'New'] }, 'Contacted/Open', '$disposition'],
+          },
+        },
+      },
+    ])
   }
 
   if (call.representative) {

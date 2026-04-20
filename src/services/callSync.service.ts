@@ -928,17 +928,22 @@ const syncSingleCallRecord = async (
   }
 
   if ((wasCreated || hasChanges) && outcome === 'Connected') {
-    // Only auto-advance disposition from "New" → "Contacted/Open".
-    // Never overwrite dispositions that the rep already set manually
-    // (e.g. Failed, Qualified, Visit Done, etc.)
-    const leadForDisposition = await Lead.findById(call.lead).select('disposition').lean().exec()
-    const updatePayload: Record<string, unknown> = {
-      lastActivity: endedAt || startedAt || new Date(),
-    }
-    if (!leadForDisposition || leadForDisposition.disposition === 'New') {
-      updatePayload.disposition = 'Contacted/Open'
-    }
-    await Lead.findByIdAndUpdate(call.lead, updatePayload).exec()
+    // Atomic aggregation-pipeline update:
+    //   • always bumps lastActivity, and
+    //   • advances disposition from "New" → "Contacted/Open" ONLY IF it is
+    //     still "New" at write time. Closes the race window that existed in
+    //     the previous read-then-write implementation where a rep's manual
+    //     change between fetch and save could be stomped.
+    await Lead.updateOne({ _id: call.lead }, [
+      {
+        $set: {
+          lastActivity: endedAt || startedAt || new Date(),
+          disposition: {
+            $cond: [{ $eq: ['$disposition', 'New'] }, 'Contacted/Open', '$disposition'],
+          },
+        },
+      },
+    ])
   }
 
   // Always sync availability for terminal statuses to prevent stuck "in-call" states
