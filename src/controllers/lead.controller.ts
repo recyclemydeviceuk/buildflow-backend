@@ -1484,6 +1484,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
       reminderStatus,
       dateFrom,
       dateTo,
+      followUp,
     } = req.query as Record<string, string>
 
     const filter: Record<string, unknown> = {}
@@ -1520,6 +1521,31 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     }
     if (normalizedReminderStatus && normalizeComparator(normalizedReminderStatus) !== 'all') {
       filter.reminderStatus = normalizedReminderStatus
+    }
+
+    // Follow-up filter. Terminal dispositions are excluded from "without" /
+    // "overdue" because closed leads never need ongoing follow-ups.
+    const normalizedFollowUp = String(followUp || '').trim().toLowerCase()
+    const TERMINAL_DISPOSITIONS = ['Failed', 'Booking Done', 'Agreement Done']
+    if (normalizedFollowUp === 'with') {
+      filter.nextFollowUp = { $ne: null, $exists: true }
+    } else if (normalizedFollowUp === 'without') {
+      filter.$and = [
+        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
+        {
+          $or: [
+            { nextFollowUp: null },
+            { nextFollowUp: { $exists: false } },
+          ],
+        },
+        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
+      ]
+    } else if (normalizedFollowUp === 'overdue') {
+      filter.nextFollowUp = { $ne: null, $lt: new Date() }
+      filter.$and = [
+        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
+        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
+      ]
     }
 
     const parsedDateFrom = normalizedDateFrom ? new Date(normalizedDateFrom) : null
