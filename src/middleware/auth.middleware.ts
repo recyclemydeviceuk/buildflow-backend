@@ -21,7 +21,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload
 
     const user = await User.findById(decoded.sub).select(
-      'name email role phone isActive callAvailabilityStatus callDeviceMode activeCallSid'
+      'name email role phone isActive isDemo callAvailabilityStatus callDeviceMode activeCallSid'
     )
     if (!user || !user.isActive) {
       return res.status(401).json({ success: false, message: 'User not found or deactivated' })
@@ -36,6 +36,21 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       callAvailabilityStatus: user.callAvailabilityStatus,
       callDeviceMode: user.callDeviceMode,
       activeCallSid: user.activeCallSid,
+      isDemo: Boolean(user.isDemo),
+    }
+
+    // ── Demo/read-only gate ─────────────────────────────────────────────
+    // Demo accounts can read anything but cannot mutate anything. We enforce
+    // this in ONE place (here) so no future write endpoint can accidentally
+    // bypass the rule. Allow safe methods always; block everything else.
+    const method = req.method.toUpperCase()
+    const isSafeMethod = method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
+    if (user.isDemo && !isSafeMethod) {
+      return res.status(403).json({
+        success: false,
+        message: 'Demo account is view-only. Editing is disabled.',
+        code: 'DEMO_READ_ONLY',
+      })
     }
 
     return next()

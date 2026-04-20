@@ -14,6 +14,10 @@ export interface IUser extends Document {
   passwordResetExpires?: Date | null
   avatarUrl?: string | null
   isActive: boolean
+  // Demo / read-only flag. When true, the backend blocks ALL non-GET requests
+  // for this user (enforced centrally in auth.middleware.ts). The frontend
+  // reads this flag and shows a persistent "read-only" banner. Default: false.
+  isDemo?: boolean
   lastLoginAt?: Date
   // Timestamp of the last time this rep was auto-routed a lead.
   // Used by the round-robin algorithm to pick the rep who has waited longest.
@@ -57,6 +61,7 @@ const UserSchema = new Schema<IUser>(
     passwordResetExpires: { type: Date, default: null },
     avatarUrl: { type: String, default: null },
     isActive: { type: Boolean, default: true },
+    isDemo: { type: Boolean, default: false },
     lastLoginAt: { type: Date },
     lastAssignedLeadAt: { type: Date, default: null },
     notificationPrefs: { type: NotificationPrefsSchema, default: () => ({ ...DEFAULT_NOTIFICATION_PREFS }) },

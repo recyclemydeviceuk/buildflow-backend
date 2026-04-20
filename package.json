@@ -10,7 +10,8 @@
     "lint": "eslint src --ext .ts",
     "sync:exotel": "node -r ts-node/register/transpile-only src/scripts/runExotelCallSync.ts",
     "repair:dispositions": "node -r ts-node/register/transpile-only src/scripts/repairDispositions.ts",
-    "repair:dispositions:apply": "node -r ts-node/register/transpile-only src/scripts/repairDispositions.ts --apply"
+    "repair:dispositions:apply": "node -r ts-node/register/transpile-only src/scripts/repairDispositions.ts --apply",
+    "seed:demo": "node -r ts-node/register/transpile-only src/scripts/createDemoUser.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.540.0",

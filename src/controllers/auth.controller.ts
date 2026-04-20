@@ -70,6 +70,7 @@ export const login = async (req: Request, res: Response, next: NextFunction) => 
           callDeviceMode: user.callDeviceMode,
           activeCallSid: user.activeCallSid,
           isActive: user.isActive,
+          isDemo: Boolean(user.isDemo),
           avatarUrl: user.avatarUrl,
           notificationPrefs: normalizeNotificationPrefs(user.notificationPrefs),
         },

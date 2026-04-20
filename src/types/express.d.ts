@@ -12,6 +12,7 @@ declare global {
         callAvailabilityStatus?: 'available' | 'offline' | 'in-call'
         callDeviceMode?: 'phone' | 'web'
         activeCallSid?: string | null
+        isDemo?: boolean
       }
       rawBody?: Buffer
     }
