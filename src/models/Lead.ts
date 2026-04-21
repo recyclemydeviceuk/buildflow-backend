@@ -161,4 +161,77 @@ LeadSchema.index({ isInQueue: 1 })
 LeadSchema.index({ owner: 1, disposition: 1 })
 LeadSchema.index({ name: 'text', phone: 'text', alternatePhone: 'text', email: 'text' })
 
+// ─────────────────────────────────────────────────────────────────────────
+// Forensic middleware: log every meaningful write to disposition / name /
+// lastActivityNote. This gives us a complete audit trail in the server log
+// for exactly the fields reps keep reporting as "reverted". Zero perf cost
+// unless one of these fields actually changes.
+// ─────────────────────────────────────────────────────────────────────────
+
+const WATCHED_FIELDS = ['disposition', 'name', 'lastActivityNote', 'notes'] as const
+
+// Document.save() path — fires when code does `lead.someField = x; await lead.save()`.
+LeadSchema.pre('save', function (next) {
+  try {
+    for (const field of WATCHED_FIELDS) {
+      if (this.isModified(field)) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[Lead watch] save() changed ${field} on ${this._id}:`,
+          JSON.stringify({
+            to: (this as any)[field],
+            isNew: this.isNew,
+            // stack trace snippet tells us which file/function triggered this save
+            trace: new Error().stack?.split('\n').slice(2, 6).join(' | '),
+          })
+        )
+      }
+    }
+  } catch {
+    // never break saves because of logging
+  }
+  next()
+})
+
+// findOneAndUpdate / updateOne / updateMany path — fires for atomic updates.
+// We inspect the update payload and warn if any watched field is being touched.
+;(['findOneAndUpdate', 'updateOne', 'updateMany'] as const).forEach((hook) => {
+  LeadSchema.pre(hook, function (next) {
+    try {
+      const update = (this as any).getUpdate?.() || {}
+      const $set = update.$set || update
+      const touched: string[] = []
+      for (const field of WATCHED_FIELDS) {
+        if ($set && Object.prototype.hasOwnProperty.call($set, field)) {
+          touched.push(field)
+        }
+      }
+      // Also catch aggregation-pipeline updates (an array payload)
+      if (Array.isArray(update)) {
+        for (const stage of update) {
+          if (stage?.$set) {
+            for (const field of WATCHED_FIELDS) {
+              if (Object.prototype.hasOwnProperty.call(stage.$set, field)) {
+                touched.push(`${field} (pipeline)`)
+              }
+            }
+          }
+        }
+      }
+      if (touched.length) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[Lead watch] ${hook} touched [${touched.join(', ')}] filter=${JSON.stringify(
+            (this as any).getFilter?.() || {}
+          )}`,
+          `\n    trace: ${new Error().stack?.split('\n').slice(2, 6).join(' | ')}`
+        )
+      }
+    } catch {
+      // never break writes
+    }
+    next()
+  })
+})
+
 export const Lead: Model<ILead> = mongoose.model<ILead>('Lead', LeadSchema)
