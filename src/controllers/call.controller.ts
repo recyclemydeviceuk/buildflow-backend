@@ -955,6 +955,17 @@ export const getCallRecording = async (req: Request, res: Response, next: NextFu
     })
 
     res.setHeader('Access-Control-Allow-Origin', '*')
+    // Explicitly allow cross-origin loading of the audio stream. Helmet's
+    // default policy is 'same-origin' which causes the browser to block the
+    // <audio> element with ERR_BLOCKED_BY_RESPONSE.NotSameOrigin when the
+    // frontend (e.g. localhost:5173 or buildflow.sizid.com) is on a different
+    // origin than this API. Overriding here is safe — the route is still JWT-
+    // gated by the authenticate middleware.
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none')
+    // Allow the browser to read Content-Range / Content-Length cross-origin
+    // so the audio player can seek.
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges')
     res.setHeader('Content-Type', response.headers['content-type'] || 'audio/mpeg')
     res.setHeader('Accept-Ranges', 'bytes')
 
