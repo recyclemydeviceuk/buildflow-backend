@@ -1377,6 +1377,71 @@ export const importLeadsFromFile = async (req: Request, res: Response, next: Nex
   }
 }
 
+/**
+ * Lightweight aggregate: returns counts for each follow-up bucket so the
+ * frontend can show badges next to each filter option without having to
+ * fetch every lead first.
+ *
+ * Respects an optional ?owner=... parameter so managers can narrow the
+ * counts to a specific rep (matches the existing /leads filter behavior).
+ */
+export const getFollowUpCounts = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { owner } = req.query as Record<string, string>
+    const TERMINAL_DISPOSITIONS = ['Failed', 'Booking Done', 'Agreement Done']
+    const now = new Date()
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const startOfTomorrow = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000)
+    const startOfDayAfter = new Date(startOfToday.getTime() + 2 * 24 * 60 * 60 * 1000)
+    const startOfWeekFwd = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000)
+
+    const baseFilter: Record<string, unknown> = {}
+    if (owner && mongoose.Types.ObjectId.isValid(owner)) {
+      baseFilter.owner = new mongoose.Types.ObjectId(owner)
+    } else if (owner && normalizeComparator(owner) === 'unassigned') {
+      baseFilter.owner = null
+    }
+    const notTerminal = { disposition: { $nin: TERMINAL_DISPOSITIONS } }
+
+    const [all, withFollowUp, without, overdue, today, tomorrow, thisWeek] = await Promise.all([
+      Lead.countDocuments(baseFilter),
+      Lead.countDocuments({ ...baseFilter, nextFollowUp: { $ne: null, $exists: true } }),
+      Lead.countDocuments({
+        ...baseFilter,
+        ...notTerminal,
+        $or: [{ nextFollowUp: null }, { nextFollowUp: { $exists: false } }],
+      }),
+      Lead.countDocuments({
+        ...baseFilter,
+        ...notTerminal,
+        nextFollowUp: { $ne: null, $lt: now },
+      }),
+      Lead.countDocuments({
+        ...baseFilter,
+        ...notTerminal,
+        nextFollowUp: { $gte: startOfToday, $lt: startOfTomorrow },
+      }),
+      Lead.countDocuments({
+        ...baseFilter,
+        ...notTerminal,
+        nextFollowUp: { $gte: startOfTomorrow, $lt: startOfDayAfter },
+      }),
+      Lead.countDocuments({
+        ...baseFilter,
+        ...notTerminal,
+        nextFollowUp: { $gte: startOfToday, $lt: startOfWeekFwd },
+      }),
+    ])
+
+    return res.status(200).json({
+      success: true,
+      data: { all, with: withFollowUp, without, overdue, today, tomorrow, thisWeek },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
 export const getLeadFilters = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const [dbCities, dbSources, settings, owners] = await Promise.all([
@@ -1527,21 +1592,43 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     // "overdue" because closed leads never need ongoing follow-ups.
     const normalizedFollowUp = String(followUp || '').trim().toLowerCase()
     const TERMINAL_DISPOSITIONS = ['Failed', 'Booking Done', 'Agreement Done']
+
+    // Compute reusable day-boundary timestamps in server local time. Close
+    // enough to the manager's local day boundaries for a day-scope filter.
+    const _now = new Date()
+    const _startOfToday = new Date(_now.getFullYear(), _now.getMonth(), _now.getDate())
+    const _startOfTomorrow = new Date(_startOfToday.getTime() + 24 * 60 * 60 * 1000)
+    const _startOfDayAfter = new Date(_startOfToday.getTime() + 2 * 24 * 60 * 60 * 1000)
+    const _startOfWeekFwd = new Date(_startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000)
+
     if (normalizedFollowUp === 'with') {
       filter.nextFollowUp = { $ne: null, $exists: true }
     } else if (normalizedFollowUp === 'without') {
       filter.$and = [
         ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
-        {
-          $or: [
-            { nextFollowUp: null },
-            { nextFollowUp: { $exists: false } },
-          ],
-        },
+        { $or: [{ nextFollowUp: null }, { nextFollowUp: { $exists: false } }] },
         { disposition: { $nin: TERMINAL_DISPOSITIONS } },
       ]
     } else if (normalizedFollowUp === 'overdue') {
-      filter.nextFollowUp = { $ne: null, $lt: new Date() }
+      filter.nextFollowUp = { $ne: null, $lt: _now }
+      filter.$and = [
+        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
+        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
+      ]
+    } else if (normalizedFollowUp === 'today') {
+      filter.nextFollowUp = { $gte: _startOfToday, $lt: _startOfTomorrow }
+      filter.$and = [
+        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
+        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
+      ]
+    } else if (normalizedFollowUp === 'tomorrow') {
+      filter.nextFollowUp = { $gte: _startOfTomorrow, $lt: _startOfDayAfter }
+      filter.$and = [
+        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
+        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
+      ]
+    } else if (normalizedFollowUp === 'thisweek' || normalizedFollowUp === 'this-week') {
+      filter.nextFollowUp = { $gte: _startOfToday, $lt: _startOfWeekFwd }
       filter.$and = [
         ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
         { disposition: { $nin: TERMINAL_DISPOSITIONS } },

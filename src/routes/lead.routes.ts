@@ -11,6 +11,7 @@ import {
   assignLead,
   updateDisposition,
   getLeadFilters,
+  getFollowUpCounts,
   lookupLeadsByPhones,
   addStatusNote,
   updateStatusNote,
@@ -40,6 +41,7 @@ router.post('/import', requireRole('manager', 'representative'), uploadImport, i
 router.post('/export', requireManager, requireFeature('exportLeads'), exportLeads)
 router.post('/bulk-delete', requireManager, requireFeature('bulkEdit'), [body('ids').isArray({ min: 1 }), body('ids.*').isMongoId()], validate, bulkDeleteLeads)
 router.get('/filters', getLeadFilters)
+router.get('/follow-up-counts', getFollowUpCounts)
 router.get('/pending-assignments', getPendingAssignments)
 router.post('/lookup-by-phone', [body('phones').isArray()], validate, lookupLeadsByPhones)
 
