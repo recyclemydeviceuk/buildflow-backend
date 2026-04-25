@@ -55,6 +55,9 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
           _id: { $in: ruleUserIds },
           role: 'representative',
           isActive: true,
+          // Skip reps the manager has blocked from receiving leads. `$ne: false`
+          // matches both `true` and missing field, so legacy users keep working.
+          canReceiveLeads: { $ne: false },
         })
           .sort({ lastAssignedLeadAt: 1, createdAt: 1 })
           .select('_id name')
@@ -79,12 +82,13 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
       const rep = await User.findOne({
         role: 'representative',
         isActive: true,
+        canReceiveLeads: { $ne: false },
       })
         .sort({ lastAssignedLeadAt: 1, createdAt: 1 })
         .select('_id name')
         .lean()
       if (!rep) {
-        logger.warn('Round-robin routing found no active representative', { leadId: String(lead._id) })
+        logger.warn('Round-robin routing found no eligible representative', { leadId: String(lead._id) })
         return null
       }
       chosenRep = { _id: rep._id as mongoose.Types.ObjectId, name: rep.name }

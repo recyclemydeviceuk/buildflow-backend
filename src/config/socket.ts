@@ -12,6 +12,7 @@ export interface UserAvailabilityPayload {
   callDeviceMode?: 'phone' | 'web'
   activeCallSid?: string | null
   isActive?: boolean
+  canReceiveLeads?: boolean
 }
 
 let io: SocketIOServer

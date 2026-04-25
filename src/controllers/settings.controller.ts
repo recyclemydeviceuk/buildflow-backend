@@ -22,6 +22,7 @@ const broadcastUserAvailability = (user: any) => {
     callDeviceMode: user.callDeviceMode || 'phone',
     activeCallSid: user.activeCallSid || null,
     isActive: user.isActive,
+    canReceiveLeads: user.canReceiveLeads !== false,
   })
 }
 
@@ -473,7 +474,7 @@ export const createTeamMember = async (req: Request, res: Response, next: NextFu
 
 export const updateTeamMember = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, email, role, phone, isActive, callAvailabilityStatus, callDeviceMode } = req.body
+    const { name, email, role, phone, isActive, callAvailabilityStatus, callDeviceMode, canReceiveLeads } = req.body
 
     const currentUser = await User.findById(req.params.id).select('activeCallSid callAvailabilityStatus')
     if (!currentUser) {
@@ -496,6 +497,7 @@ export const updateTeamMember = async (req: Request, res: Response, next: NextFu
 
     const updateFields: Record<string, any> = { name, role, phone, isActive, callAvailabilityStatus, callDeviceMode }
     if (email) updateFields.email = email.toLowerCase()
+    if (typeof canReceiveLeads === 'boolean') updateFields.canReceiveLeads = canReceiveLeads
 
     const user = await User.findByIdAndUpdate(
       req.params.id,

@@ -14,6 +14,12 @@ export interface IUser extends Document {
   passwordResetExpires?: Date | null
   avatarUrl?: string | null
   isActive: boolean
+  // Lead-receiving switch (managers only toggle this). When false the
+  // round-robin + city-rule routers skip this rep — they keep their existing
+  // leads and stay fully active in every other way (calls, follow-ups, etc.).
+  // Default: true. Distinct from `isActive`, which deactivates the account
+  // entirely.
+  canReceiveLeads?: boolean
   // Demo / read-only flag. When true, the backend blocks ALL non-GET requests
   // for this user (enforced centrally in auth.middleware.ts). The frontend
   // reads this flag and shows a persistent "read-only" banner. Default: false.
@@ -61,6 +67,7 @@ const UserSchema = new Schema<IUser>(
     passwordResetExpires: { type: Date, default: null },
     avatarUrl: { type: String, default: null },
     isActive: { type: Boolean, default: true },
+    canReceiveLeads: { type: Boolean, default: true },
     isDemo: { type: Boolean, default: false },
     lastLoginAt: { type: Date },
     lastAssignedLeadAt: { type: Date, default: null },
