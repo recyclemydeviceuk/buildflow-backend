@@ -1549,6 +1549,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
       reminderStatus,
       dateFrom,
       dateTo,
+      dateField,
       followUp,
     } = req.query as Record<string, string>
 
@@ -1638,11 +1639,17 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     const parsedDateFrom = normalizedDateFrom ? new Date(normalizedDateFrom) : null
     const parsedDateTo = normalizedDateTo ? new Date(normalizedDateTo) : null
 
+    // Which timestamp field the date range applies to. Defaults to createdAt
+    // for backwards compatibility with any caller that didn't pass dateField.
+    const normalizedDateField = String(dateField || '').trim()
+    const dateFieldKey: 'createdAt' | 'updatedAt' =
+      normalizedDateField === 'updatedAt' ? 'updatedAt' : 'createdAt'
+
     if (
       (parsedDateFrom && !Number.isNaN(parsedDateFrom.getTime())) ||
       (parsedDateTo && !Number.isNaN(parsedDateTo.getTime()))
     ) {
-      filter.createdAt = {
+      filter[dateFieldKey] = {
         ...(parsedDateFrom && !Number.isNaN(parsedDateFrom.getTime()) && { $gte: parsedDateFrom }),
         ...(parsedDateTo && !Number.isNaN(parsedDateTo.getTime()) && { $lte: parsedDateTo }),
       }
@@ -1657,7 +1664,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     const skip = (pageNum - 1) * limitNum
 
     const [leads, total] = await Promise.all([
-      Lead.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum),
+      Lead.find(filter).sort({ [dateFieldKey]: -1 }).skip(skip).limit(limitNum),
       Lead.countDocuments(filter),
     ])
 
