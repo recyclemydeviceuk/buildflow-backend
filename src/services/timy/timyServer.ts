@@ -90,6 +90,31 @@ export const initTimyWebSocketServer = (httpServer: http.Server): void => {
       ? langParam
       : 'en-IN'
 
+    // Optional conversation history — base64(json) of `[{role, text}, ...]`.
+    // Sent by the browser on reconnect (e.g. language switch) so the new
+    // upstream session can splice the prior turns into its system prompt and
+    // continue the chat instead of starting fresh.
+    let history: Array<{ role: 'user' | 'assistant'; text: string }> = []
+    const historyParam = url.searchParams.get('history') || ''
+    if (historyParam) {
+      try {
+        const json = Buffer.from(historyParam, 'base64').toString('utf-8')
+        const parsed = JSON.parse(json)
+        if (Array.isArray(parsed)) {
+          history = parsed
+            .filter(
+              (e: any) =>
+                e &&
+                (e.role === 'user' || e.role === 'assistant') &&
+                typeof e.text === 'string'
+            )
+            .slice(-12) // hard cap so a malicious client can't blow up the prompt
+        }
+      } catch {
+        // ignore — bad input just means no history
+      }
+    }
+
     let ctx: TimyContext
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload
@@ -105,6 +130,7 @@ export const initTimyWebSocketServer = (httpServer: http.Server): void => {
         userRole: user.role,
         isDemo: Boolean(user.isDemo),
         language,
+        history,
       }
     } catch {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')

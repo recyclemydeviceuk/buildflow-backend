@@ -24,6 +24,11 @@ export interface TimyContext {
   isDemo: boolean
   /** Voice + reply language. Defaults to Indian English. */
   language: 'en-IN' | 'hi-IN'
+  /**
+   * Recent conversation turns, passed in on reconnect (e.g. language switch)
+   * so the new session continues instead of starting over. Capped server-side.
+   */
+  history?: Array<{ role: 'user' | 'assistant'; text: string }>
 }
 
 export interface TimyToolDeclaration {
@@ -382,12 +387,28 @@ export const buildTimySystemPrompt = (ctx: TimyContext): string => {
         'Language: Indian English (en-IN). Reply in clear, conversational Indian English. Pronounce names, cities, and Hindi words naturally — do not switch to American or British accents. Read numbers the Indian way when natural (e.g. "two-twenty leads", "one lakh"). It is fine to drop in common Hindi CRM words ("call back karna hai", "site visit") if the user uses them.',
       ]
 
+  // Replay recent dialogue so a language-switch / reconnect feels continuous.
+  const historyBlock: string[] = []
+  if (ctx.history && ctx.history.length > 0) {
+    historyBlock.push(
+      'Previous conversation (the user just reconnected — likely a language switch). Continue from here, do NOT start over with a fresh greeting unless the user asks for one:'
+    )
+    for (const turn of ctx.history) {
+      const speaker = turn.role === 'user' ? ctx.userName : 'You (Timy)'
+      // Trim each turn so a wild long monologue can't blow the prompt
+      const text = turn.text.slice(0, 600)
+      historyBlock.push(`${speaker}: ${text}`)
+    }
+    historyBlock.push('') // blank line before the rest
+  }
+
   return [
     `You are Timy AI, BuildFlow's friendly voice assistant. You're talking with ${ctx.userName}, who is a ${ctx.userRole}.`,
     dateLine,
     '',
     ...langBlock,
     '',
+    ...historyBlock,
     'Goals:',
     '- Help the user get essential CRM information (leads, follow-ups, calls, team performance) in seconds, hands-free.',
     '- Be conversational, brief, and warm. Speak like a helpful colleague — short sentences, natural pacing, no markdown, no bullet symbols when speaking.',
@@ -403,6 +424,7 @@ export const buildTimySystemPrompt = (ctx: TimyContext): string => {
     `- Current voice language is ${ctx.language === 'hi-IN' ? 'Hindi (hi-IN, male voice)' : 'Indian English (en-IN, female voice)'}.`,
     "- If the user EVER asks you to switch language (e.g. 'speak Hindi', 'change to English', 'हिन्दी में बात करो', 'अंग्रेज़ी में बोलो', 'switch to Hindi'), CALL the switch_language tool with the target code. Do NOT simply start replying in the new language without calling the tool — the voice itself only changes after the relay reconnects.",
     "- After calling switch_language, give a one-line confirmation in the OLD language ('OK, switching to Hindi…' / 'ठीक है, अंग्रेज़ी में करते हैं…') and stop. The next turn will already be in the new language with the new voice.",
+    '- When the session reconnects after a language switch, the previous conversation will be replayed to you above as context. Continue smoothly from wherever you left off — do NOT greet the user again or re-introduce yourself. Just translate-in-spirit the next reply and keep going.',
     '',
     'Tone:',
     isHindi
