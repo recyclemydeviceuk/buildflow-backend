@@ -255,6 +255,15 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
             name: fc.name,
             response: { output: result },
           })
+          // Intercept: when the model decides to switch language, tell the
+          // browser to flip its UI toggle and reconnect in the new language.
+          // The actual voice only changes on a fresh upstream session because
+          // speechConfig.languageCode + voiceConfig are bound at setup time.
+          if (fc.name === 'switch_language') {
+            const target =
+              fc.args?.language === 'hi-IN' ? 'hi-IN' : 'en-IN'
+            safeClientSend({ type: 'language_switch', language: target })
+          }
         } catch (err: any) {
           logger.error('Timy: tool execution failed', { name: fc.name, err: err?.message })
           responses.push({

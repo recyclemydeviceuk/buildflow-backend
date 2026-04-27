@@ -65,6 +65,35 @@ const endOfDay = (d = new Date()) => {
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 const tools: Record<string, Tool> = {
+  switch_language: {
+    declaration: {
+      name: 'switch_language',
+      description:
+        "Switch the voice and reply language for this session. Call this WHENEVER the user asks to change language — e.g. 'switch to Hindi', 'हिन्दी में बात करो', 'अंग्रेज़ी में बोलो', 'speak English', 'change to English/Hindi'. The relay will reconnect with the new voice automatically and you'll greet the user again in the new language. Always call this tool first; never just start replying in the new language without calling it, because the voice won't change until the reconnect happens.",
+      parameters: {
+        type: 'object',
+        properties: {
+          language: {
+            type: 'string',
+            enum: ['en-IN', 'hi-IN'],
+            description:
+              'Target language code: en-IN for Indian English (female voice), hi-IN for Hindi (male voice).',
+          },
+        },
+        required: ['language'],
+      },
+    },
+    // The actual switch is handled by the relay — this handler just acks.
+    handler: async (args) => {
+      const target = args?.language === 'hi-IN' ? 'hi-IN' : 'en-IN'
+      return {
+        switched: true,
+        language: target,
+        note: 'Session will reconnect with the new voice in a moment.',
+      }
+    },
+  },
+
   find_lead: {
     declaration: {
       name: 'find_lead',
@@ -369,6 +398,11 @@ export const buildTimySystemPrompt = (ctx: TimyContext): string => {
     '- You can only READ data today. If the user asks you to delete, edit, or update something, tell them politely you can only fetch information and they should use the BuildFlow UI to make changes.',
     '- If the user is a representative, only quote data about them. The tools enforce this; do not try to ask about other reps\' leads.',
     '- If a tool returns zero results, say so plainly — don\'t pad the answer.',
+    '',
+    'Language switching:',
+    `- Current voice language is ${ctx.language === 'hi-IN' ? 'Hindi (hi-IN, male voice)' : 'Indian English (en-IN, female voice)'}.`,
+    "- If the user EVER asks you to switch language (e.g. 'speak Hindi', 'change to English', 'हिन्दी में बात करो', 'अंग्रेज़ी में बोलो', 'switch to Hindi'), CALL the switch_language tool with the target code. Do NOT simply start replying in the new language without calling the tool — the voice itself only changes after the relay reconnects.",
+    "- After calling switch_language, give a one-line confirmation in the OLD language ('OK, switching to Hindi…' / 'ठीक है, अंग्रेज़ी में करते हैं…') and stop. The next turn will already be in the new language with the new voice.",
     '',
     'Tone:',
     isHindi
