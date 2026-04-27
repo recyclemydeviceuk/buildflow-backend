@@ -3,6 +3,7 @@ import http from 'http'
 import app from './app'
 import connectDB from './config/db'
 import { initSocket } from './config/socket'
+import { initTimyWebSocketServer } from './services/timy/timyServer'
 import { PORT } from './config/constants'
 import { startReminderNotifier, stopReminderNotifier } from './jobs/reminderNotifier.job'
 import { startCallSyncPoller, stopCallSyncPoller } from './jobs/callSyncPoller.job'
@@ -12,6 +13,7 @@ import { integrationSyncJob } from './jobs/integrationSync.job'
 const httpServer = http.createServer(app)
 
 initSocket(httpServer)
+initTimyWebSocketServer(httpServer)
 
 const start = async () => {
   await connectDB()

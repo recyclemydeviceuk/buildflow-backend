@@ -71,3 +71,14 @@ export const S3_RECORDINGS_PREFIX = 'recordings/'
 export const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000
 export const RATE_LIMIT_MAX_REQUESTS = 200
 export const AUTH_RATE_LIMIT_MAX = 20
+
+// ── Timy AI (Gemini Live voice assistant) ──────────────────────────────────
+// Gemini API key for the Live (speech-to-speech) endpoint. Set in .env as
+// `GEMINI_API_KEY`. Required for Timy AI to function.
+export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''
+// Live model used for speech-to-speech. Override per-environment via
+// `GEMINI_LIVE_MODEL` if Google retires the preview alias. Default is the
+// 2.5-flash native-audio dialog preview, which is the closest publicly
+// available stand-in for "3.1 flash lite preview speech-to-speech".
+export const GEMINI_LIVE_MODEL =
+  process.env.GEMINI_LIVE_MODEL || 'gemini-2.5-flash-preview-native-audio-dialog'
