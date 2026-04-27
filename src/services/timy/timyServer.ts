@@ -43,6 +43,15 @@ const GEMINI_LIVE_URL = (apiKey: string) =>
     apiKey
   )}`
 
+// Per-language prebuilt voice selection. Aoede = warm Indian-English-friendly
+// female; Charon = deep multilingual male that handles Hindi naturally. Both
+// are overridable via env so a deployment can swap voices without a code
+// change (e.g. GEMINI_VOICE_EN_IN=Kore).
+const VOICE_BY_LANGUAGE: Record<'en-IN' | 'hi-IN', string> = {
+  'en-IN': process.env.GEMINI_VOICE_EN_IN || 'Aoede',
+  'hi-IN': process.env.GEMINI_VOICE_HI_IN || 'Charon',
+}
+
 const TIMY_PATH = '/ws/timy'
 
 export const initTimyWebSocketServer = (httpServer: http.Server): void => {
@@ -176,6 +185,8 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
       user: ctx.userId,
       apiVersion: GEMINI_LIVE_API_VERSION,
       model: GEMINI_LIVE_MODEL,
+      language: ctx.language,
+      voice: VOICE_BY_LANGUAGE[ctx.language],
     })
     const setup: any = {
       setup: {
@@ -183,10 +194,12 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: {
-            // Aoede is multilingual and handles both Indian English and
-            // Hindi natively. languageCode tells the model which language
-            // to speak in for this session.
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } },
+            // Female Indian-English voice for en-IN, deep male voice for
+            // hi-IN. Both come from Gemini's multilingual prebuilt set so
+            // the same model serves both with no extra config.
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: VOICE_BY_LANGUAGE[ctx.language] },
+            },
             languageCode: ctx.language,
           },
         },
