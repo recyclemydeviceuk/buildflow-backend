@@ -82,3 +82,10 @@ export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''
 // available stand-in for "3.1 flash lite preview speech-to-speech".
 export const GEMINI_LIVE_MODEL =
   process.env.GEMINI_LIVE_MODEL || 'gemini-2.5-flash-preview-native-audio-dialog'
+// Gemini Live API version. The native-audio-dialog preview model lives on
+// v1alpha; the GA half-cascade models (gemini-2.0-flash-live-001 etc.) use
+// v1beta. Auto-detect by model name unless explicitly overridden via
+// `GEMINI_LIVE_API_VERSION`.
+export const GEMINI_LIVE_API_VERSION =
+  process.env.GEMINI_LIVE_API_VERSION ||
+  (/native-audio|preview-native|2\.5-flash-preview/i.test(GEMINI_LIVE_MODEL) ? 'v1alpha' : 'v1beta')

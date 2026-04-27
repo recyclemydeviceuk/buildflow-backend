@@ -23,7 +23,12 @@ import http from 'http'
 import { URL } from 'url'
 import WebSocket, { WebSocketServer, RawData } from 'ws'
 import jwt from 'jsonwebtoken'
-import { JWT_SECRET, GEMINI_API_KEY, GEMINI_LIVE_MODEL } from '../../config/constants'
+import {
+  JWT_SECRET,
+  GEMINI_API_KEY,
+  GEMINI_LIVE_MODEL,
+  GEMINI_LIVE_API_VERSION,
+} from '../../config/constants'
 import { User } from '../../models/User'
 import { logger } from '../../utils/logger'
 import {
@@ -34,7 +39,7 @@ import {
 } from './timyTools'
 
 const GEMINI_LIVE_URL = (apiKey: string) =>
-  `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(
+  `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.${GEMINI_LIVE_API_VERSION}.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(
     apiKey
   )}`
 
@@ -94,7 +99,12 @@ export const initTimyWebSocketServer = (httpServer: http.Server): void => {
     })
   })
 
-  logger.info('Timy WebSocket server attached', { path: TIMY_PATH, model: GEMINI_LIVE_MODEL })
+  logger.info('Timy WebSocket server attached', {
+    path: TIMY_PATH,
+    model: GEMINI_LIVE_MODEL,
+    apiVersion: GEMINI_LIVE_API_VERSION,
+    keyConfigured: Boolean(GEMINI_API_KEY),
+  })
 }
 
 const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
@@ -132,8 +142,33 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
     return
   }
 
+  // Upstream upgrade failure (e.g. 4xx from the Gemini API) — `ws` emits
+  // `unexpected-response` instead of `error`. Capture the body so we can tell
+  // the user *why* (invalid key, model not enabled, region restricted, etc.).
+  upstream.on('unexpected-response', (_req, res) => {
+    let body = ''
+    res.on('data', (chunk) => (body += chunk.toString()))
+    res.on('end', () => {
+      const trimmed = body.slice(0, 400)
+      logger.error('Timy: upstream unexpected response', {
+        status: res.statusCode,
+        body: trimmed,
+      })
+      safeClientSend({
+        type: 'error',
+        message: `Gemini rejected the connection (HTTP ${res.statusCode}). ${trimmed}`,
+      })
+      closeAll()
+    })
+  })
+
   upstream.on('open', () => {
-    const setup = {
+    logger.info('Timy: upstream open', {
+      user: ctx.userId,
+      apiVersion: GEMINI_LIVE_API_VERSION,
+      model: GEMINI_LIVE_MODEL,
+    })
+    const setup: any = {
       setup: {
         model: `models/${GEMINI_LIVE_MODEL}`,
         generationConfig: {
@@ -146,10 +181,13 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
           parts: [{ text: buildTimySystemPrompt(ctx) }],
         },
         tools: [{ functionDeclarations: getTimyToolDeclarations(ctx.userRole) }],
-        // Ask Gemini to also send transcripts so the UI can show captions.
-        outputAudioTranscription: {},
-        inputAudioTranscription: {},
       },
+    }
+    // Transcription fields are only on v1alpha right now. Adding them to a
+    // v1beta setup makes the upstream reject the entire payload.
+    if (GEMINI_LIVE_API_VERSION === 'v1alpha') {
+      setup.setup.outputAudioTranscription = {}
+      setup.setup.inputAudioTranscription = {}
     }
     try {
       upstream!.send(JSON.stringify(setup))
@@ -213,13 +251,33 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
   })
 
   upstream.on('close', (code, reason) => {
-    safeClientSend({ type: 'upstream_closed', code, reason: reason?.toString() })
+    const reasonStr = reason?.toString() || ''
+    logger.warn('Timy: upstream closed', {
+      user: ctx.userId,
+      code,
+      reason: reasonStr,
+      setupComplete,
+    })
+    // If the upstream closed before setupComplete, that almost always means
+    // Gemini rejected our setup payload (bad model name, wrong API version,
+    // unsupported field). Surface a concrete reason to the browser so the
+    // user doesn't just see "Session ended".
+    const message = setupComplete
+      ? reasonStr || `Gemini Live closed the connection (code ${code}).`
+      : reasonStr
+        ? `Gemini Live rejected the session: ${reasonStr}`
+        : `Gemini Live rejected the session before setup completed (code ${code}). Check that GEMINI_LIVE_MODEL "${GEMINI_LIVE_MODEL}" is available on your API key and that GEMINI_LIVE_API_VERSION (${GEMINI_LIVE_API_VERSION}) matches the model.`
+    safeClientSend({ type: 'error', message })
+    safeClientSend({ type: 'upstream_closed', code, reason: reasonStr })
     closeAll(1000)
   })
 
   upstream.on('error', (err: any) => {
-    logger.error('Timy: upstream error', err?.message || err)
-    safeClientSend({ type: 'error', message: 'Upstream connection error.' })
+    logger.error('Timy: upstream error', { message: err?.message || String(err) })
+    safeClientSend({
+      type: 'error',
+      message: `Upstream connection error: ${err?.message || 'unknown'}.`,
+    })
     closeAll()
   })
 
