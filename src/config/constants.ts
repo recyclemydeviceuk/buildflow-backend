@@ -77,14 +77,16 @@ export const AUTH_RATE_LIMIT_MAX = 20
 // `GEMINI_API_KEY`. Required for Timy AI to function.
 export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''
 // Live model used for speech-to-speech. Override per-environment via
-// `GEMINI_LIVE_MODEL`. Known working aliases as of late 2025:
-//   gemini-live-2.5-flash-preview         — preview, v1beta (DEFAULT)
-//   gemini-2.0-flash-live-001             — GA, v1beta
-//   gemini-2.5-flash-native-audio-preview-09-2025 — newer native audio, v1beta
-// The older `gemini-2.5-flash-preview-native-audio-dialog` alias has been
-// retired by Google — switch to one of the names above.
+// `GEMINI_LIVE_MODEL`. Default is the GA stable half-cascade model — most
+// reliable across regions / API key tiers. Other aliases that have worked:
+//   gemini-2.0-flash-live-001               — GA stable, v1beta (DEFAULT)
+//   gemini-2.5-flash-live-preview           — note word order: live BEFORE preview
+//   gemini-2.5-flash-preview-native-audio-dialog — v1alpha (preview, may be retired)
+// If your console shows "model is not found", confirm the exact alias under
+// https://ai.google.dev/gemini-api/docs/live for the current preview names —
+// Google sometimes renames or retires them between releases.
 export const GEMINI_LIVE_MODEL =
-  process.env.GEMINI_LIVE_MODEL || 'gemini-live-2.5-flash-preview'
+  process.env.GEMINI_LIVE_MODEL || 'gemini-2.0-flash-live-001'
 // Gemini Live API version. Most production-ready Live models live on v1beta;
 // only the very-early native-audio-dialog preview ever required v1alpha and
 // that one has since been retired. Override via `GEMINI_LIVE_API_VERSION` if
