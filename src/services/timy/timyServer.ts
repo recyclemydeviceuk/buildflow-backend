@@ -43,13 +43,14 @@ const GEMINI_LIVE_URL = (apiKey: string) =>
     apiKey
   )}`
 
-// Per-language prebuilt voice selection. Aoede = warm Indian-English-friendly
-// female; Charon = deep multilingual male that handles Hindi naturally. Both
-// are overridable via env so a deployment can swap voices without a code
-// change (e.g. GEMINI_VOICE_EN_IN=Kore).
-const VOICE_BY_LANGUAGE: Record<'en-IN' | 'hi-IN', string> = {
-  'en-IN': process.env.GEMINI_VOICE_EN_IN || 'Aoede',
-  'hi-IN': process.env.GEMINI_VOICE_HI_IN || 'Charon',
+// Per-language prebuilt voice selection. All three voices come from
+// Gemini's multilingual prebuilt set — `languageCode` does the heavy
+// lifting, the voiceName just picks the timbre. Each can be overridden
+// via env without redeploy (e.g. GEMINI_VOICE_KN_IN=Leda).
+const VOICE_BY_LANGUAGE: Record<'en-IN' | 'hi-IN' | 'kn-IN', string> = {
+  'en-IN': process.env.GEMINI_VOICE_EN_IN || 'Aoede',  // warm female, Indian English
+  'hi-IN': process.env.GEMINI_VOICE_HI_IN || 'Charon', // deep male, Hindi
+  'kn-IN': process.env.GEMINI_VOICE_KN_IN || 'Kore',   // crisp female, Kannada
 }
 
 const TIMY_PATH = '/ws/timy'
@@ -84,9 +85,11 @@ export const initTimyWebSocketServer = (httpServer: http.Server): void => {
 
     // Validate the requested voice language. Falls back to Indian English
     // if the client sends anything we don't recognise.
-    const ALLOWED_LANGS = ['en-IN', 'hi-IN'] as const
+    const ALLOWED_LANGS = ['en-IN', 'hi-IN', 'kn-IN'] as const
     const langParam = (url.searchParams.get('lang') || 'en-IN') as (typeof ALLOWED_LANGS)[number]
-    const language: 'en-IN' | 'hi-IN' = (ALLOWED_LANGS as readonly string[]).includes(langParam)
+    const language: 'en-IN' | 'hi-IN' | 'kn-IN' = (ALLOWED_LANGS as readonly string[]).includes(
+      langParam
+    )
       ? langParam
       : 'en-IN'
 

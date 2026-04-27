@@ -23,7 +23,7 @@ export interface TimyContext {
   userRole: 'manager' | 'representative'
   isDemo: boolean
   /** Voice + reply language. Defaults to Indian English. */
-  language: 'en-IN' | 'hi-IN'
+  language: 'en-IN' | 'hi-IN' | 'kn-IN'
   /**
    * Recent conversation turns, passed in on reconnect (e.g. language switch)
    * so the new session continues instead of starting over. Capped server-side.
@@ -74,15 +74,15 @@ const tools: Record<string, Tool> = {
     declaration: {
       name: 'switch_language',
       description:
-        "Switch the voice and reply language for this session. Call this WHENEVER the user asks to change language — e.g. 'switch to Hindi', 'हिन्दी में बात करो', 'अंग्रेज़ी में बोलो', 'speak English', 'change to English/Hindi'. The relay will reconnect with the new voice automatically and you'll greet the user again in the new language. Always call this tool first; never just start replying in the new language without calling it, because the voice won't change until the reconnect happens.",
+        "Switch the voice and reply language for this session. Call this WHENEVER the user asks to change language — e.g. 'switch to Hindi', 'speak English', 'ಕನ್ನಡದಲ್ಲಿ ಮಾತಾಡಿ', 'हिन्दी में बात करो'. The relay will reconnect with the new voice automatically and the conversation will continue. Always call this tool first; never just start replying in the new language without calling it, because the voice won't change until the reconnect happens.",
       parameters: {
         type: 'object',
         properties: {
           language: {
             type: 'string',
-            enum: ['en-IN', 'hi-IN'],
+            enum: ['en-IN', 'hi-IN', 'kn-IN'],
             description:
-              'Target language code: en-IN for Indian English (female voice), hi-IN for Hindi (male voice).',
+              'Target language code: en-IN (Indian English, female), hi-IN (Hindi, male), kn-IN (Kannada, female).',
           },
         },
         required: ['language'],
@@ -90,7 +90,9 @@ const tools: Record<string, Tool> = {
     },
     // The actual switch is handled by the relay — this handler just acks.
     handler: async (args) => {
-      const target = args?.language === 'hi-IN' ? 'hi-IN' : 'en-IN'
+      const raw = args?.language
+      const target: 'en-IN' | 'hi-IN' | 'kn-IN' =
+        raw === 'hi-IN' ? 'hi-IN' : raw === 'kn-IN' ? 'kn-IN' : 'en-IN'
       return {
         switched: true,
         language: target,
@@ -373,19 +375,22 @@ export const buildTimySystemPrompt = (ctx: TimyContext): string => {
     year: 'numeric',
   })}.`
 
-  const isHindi = ctx.language === 'hi-IN'
-
   // Language block tells Gemini what to speak in. We keep the rest of the
   // prompt in English because the model follows English instructions more
-  // reliably than Hindi-only ones, but the *spoken output* is governed by
+  // reliably than non-English ones, but the *spoken output* is governed by
   // these explicit rules and the speechConfig.languageCode at the API level.
-  const langBlock = isHindi
-    ? [
-        'Language: Hindi (hi-IN). Reply ENTIRELY in natural, conversational Hindi (Devanagari script when transcribed). Use Roman/English only for product names, lead names, phone numbers, and BuildFlow UI labels — everything else in Hindi. Use a warm, respectful tone — “आप” form, never “तू”. Indian numbers should be read in Hindi (e.g. “दो सौ बीस लीड्स”). Mix in common English CRM words the user already uses (“lead”, “follow-up”, “pipeline”) — do not awkwardly translate them.',
-      ]
-    : [
-        'Language: Indian English (en-IN). Reply in clear, conversational Indian English. Pronounce names, cities, and Hindi words naturally — do not switch to American or British accents. Read numbers the Indian way when natural (e.g. "two-twenty leads", "one lakh"). It is fine to drop in common Hindi CRM words ("call back karna hai", "site visit") if the user uses them.',
-      ]
+  const langBlock =
+    ctx.language === 'hi-IN'
+      ? [
+          'Language: Hindi (hi-IN). Reply ENTIRELY in natural, conversational Hindi (Devanagari script when transcribed). Use Roman/English only for product names, lead names, phone numbers, and BuildFlow UI labels — everything else in Hindi. Use a warm, respectful tone — “आप” form, never “तू”. Indian numbers should be read in Hindi (e.g. “दो सौ बीस लीड्स”). Mix in common English CRM words the user already uses (“lead”, “follow-up”, “pipeline”) — do not awkwardly translate them.',
+        ]
+      : ctx.language === 'kn-IN'
+      ? [
+          'Language: Kannada (kn-IN). Reply ENTIRELY in natural, conversational Kannada (Kannada script when transcribed). Use Roman/English only for product names, lead names, phone numbers, and BuildFlow UI labels — everything else in Kannada. Use a warm, respectful tone — “ನೀವು” form for the user, never “ನೀನು”. Read Indian numbers naturally in Kannada (e.g. “ಇನ್ನೂರಾ ಇಪ್ಪತ್ತು leads”). Keep common English CRM words (“lead”, “follow-up”, “pipeline”, “call”) as-is in English — do not awkwardly translate them. Bengaluru-style polite Kannada is the default register.',
+        ]
+      : [
+          'Language: Indian English (en-IN). Reply in clear, conversational Indian English. Pronounce names, cities, and Indic words naturally — do not switch to American or British accents. Read numbers the Indian way when natural (e.g. "two-twenty leads", "one lakh"). It is fine to drop in common Hindi/Kannada CRM words ("call back karna hai", "site visit", "neevu") if the user uses them.',
+        ]
 
   // Replay recent dialogue so a language-switch / reconnect feels continuous.
   const historyBlock: string[] = []
@@ -421,16 +426,24 @@ export const buildTimySystemPrompt = (ctx: TimyContext): string => {
     '- If a tool returns zero results, say so plainly — don\'t pad the answer.',
     '',
     'Language switching:',
-    `- Current voice language is ${ctx.language === 'hi-IN' ? 'Hindi (hi-IN, male voice)' : 'Indian English (en-IN, female voice)'}.`,
-    "- If the user EVER asks you to switch language (e.g. 'speak Hindi', 'change to English', 'हिन्दी में बात करो', 'अंग्रेज़ी में बोलो', 'switch to Hindi'), CALL the switch_language tool with the target code. Do NOT simply start replying in the new language without calling the tool — the voice itself only changes after the relay reconnects.",
+    `- Current voice language is ${
+      ctx.language === 'hi-IN'
+        ? 'Hindi (hi-IN, male voice)'
+        : ctx.language === 'kn-IN'
+        ? 'Kannada (kn-IN, female voice)'
+        : 'Indian English (en-IN, female voice)'
+    }.`,
+    "- Supported languages: en-IN (Indian English), hi-IN (Hindi), kn-IN (Kannada). If the user EVER asks you to switch language (e.g. 'speak Hindi', 'change to English', 'ಕನ್ನಡದಲ್ಲಿ ಮಾತಾಡಿ', 'हिन्दी में बात करो', 'switch to Kannada'), CALL the switch_language tool with the target code. Do NOT simply start replying in the new language without calling the tool — the voice itself only changes after the relay reconnects.",
     "- After calling switch_language, give a one-line confirmation in the OLD language ('OK, switching to Hindi…' / 'ठीक है, अंग्रेज़ी में करते हैं…') and stop. The next turn will already be in the new language with the new voice.",
     '- When the session reconnects after a language switch, the previous conversation will be replayed to you above as context. Continue smoothly from wherever you left off — do NOT greet the user again or re-introduce yourself. Just translate-in-spirit the next reply and keep going.',
     '',
     'Tone:',
-    isHindi
+    ctx.language === 'hi-IN'
       ? '- शुरुआत में छोटा-सा नमस्ते करें (e.g. "नमस्ते, Timy बोल रहा हूँ — आप क्या जानना चाहेंगे?"), फिर रुकें।'
+      : ctx.language === 'kn-IN'
+      ? '- ಸಣ್ಣ ಗ್ರೀಟಿಂಗ್‌ನಿಂದ ಶುರು ಮಾಡಿ (e.g. "ನಮಸ್ಕಾರ, ನಾನು Timy — ನಿಮಗೆ ಏನು ಸಹಾಯ ಬೇಕು?"), ನಂತರ ಕಾಯಿರಿ.'
       : '- Greet briefly when the session opens (e.g. "Hi, Timy here — what can I look up for you?"), then wait.',
-    '- Acknowledge the user before running long lookups ("One sec, checking…" / "एक सेकंड, देख रहा हूँ…").',
+    '- Acknowledge the user before running long lookups ("One sec, checking…" / "एक सेकंड, देख रहा हूँ…" / "ಒಂದು ಕ್ಷಣ, ನೋಡ್ತಿದೀನಿ…").',
     '- End answers crisply.',
   ].join('\n')
 }
