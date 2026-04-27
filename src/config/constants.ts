@@ -77,16 +77,19 @@ export const AUTH_RATE_LIMIT_MAX = 20
 // `GEMINI_API_KEY`. Required for Timy AI to function.
 export const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ''
 // Live model used for speech-to-speech. Override per-environment via
-// `GEMINI_LIVE_MODEL`. Default is the GA stable half-cascade model — most
-// reliable across regions / API key tiers. Other aliases that have worked:
-//   gemini-2.0-flash-live-001               — GA stable, v1beta (DEFAULT)
-//   gemini-2.5-flash-live-preview           — note word order: live BEFORE preview
-//   gemini-2.5-flash-preview-native-audio-dialog — v1alpha (preview, may be retired)
-// If your console shows "model is not found", confirm the exact alias under
-// https://ai.google.dev/gemini-api/docs/live for the current preview names —
-// Google sometimes renames or retires them between releases.
+// `GEMINI_LIVE_MODEL`. Defaults to Gemini 3.1 Flash Live preview — the
+// closest publicly-listed match to "3.1 flash lite preview speech-to-speech"
+// and confirmed via the v1beta ListModels API to support bidiGenerateContent.
+// Other aliases known to support Live on v1beta:
+//   gemini-3.1-flash-live-preview                       (DEFAULT — 3.1 preview)
+//   gemini-2.5-flash-native-audio-latest                (2.5 native audio, rolling)
+//   gemini-2.5-flash-native-audio-preview-12-2025       (2.5 native audio, dated)
+// If your console shows "model is not found", run
+//   curl https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY
+// and pick a name whose `supportedGenerationMethods` includes
+// `bidiGenerateContent`.
 export const GEMINI_LIVE_MODEL =
-  process.env.GEMINI_LIVE_MODEL || 'gemini-2.0-flash-live-001'
+  process.env.GEMINI_LIVE_MODEL || 'gemini-3.1-flash-live-preview'
 // Gemini Live API version. Most production-ready Live models live on v1beta;
 // only the very-early native-audio-dialog preview ever required v1alpha and
 // that one has since been retired. Override via `GEMINI_LIVE_API_VERSION` if
