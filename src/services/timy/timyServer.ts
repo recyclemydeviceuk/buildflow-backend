@@ -292,12 +292,15 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
     }
 
     if (msg.type === 'audio' && typeof msg.data === 'string') {
-      // Base64 little-endian 16-bit PCM @ 16kHz mono from the browser
+      // Base64 little-endian 16-bit PCM @ 16kHz mono from the browser.
+      // The newer Live API takes a single `audio` field; the legacy
+      // `mediaChunks` array is deprecated and the server emits a warning
+      // back to the client when used.
       try {
         upstream.send(
           JSON.stringify({
             realtimeInput: {
-              mediaChunks: [{ mimeType: 'audio/pcm;rate=16000', data: msg.data }],
+              audio: { mimeType: 'audio/pcm;rate=16000', data: msg.data },
             },
           })
         )
