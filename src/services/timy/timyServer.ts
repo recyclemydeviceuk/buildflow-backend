@@ -73,6 +73,14 @@ export const initTimyWebSocketServer = (httpServer: http.Server): void => {
       return
     }
 
+    // Validate the requested voice language. Falls back to Indian English
+    // if the client sends anything we don't recognise.
+    const ALLOWED_LANGS = ['en-IN', 'hi-IN'] as const
+    const langParam = (url.searchParams.get('lang') || 'en-IN') as (typeof ALLOWED_LANGS)[number]
+    const language: 'en-IN' | 'hi-IN' = (ALLOWED_LANGS as readonly string[]).includes(langParam)
+      ? langParam
+      : 'en-IN'
+
     let ctx: TimyContext
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload
@@ -87,6 +95,7 @@ export const initTimyWebSocketServer = (httpServer: http.Server): void => {
         userName: user.name,
         userRole: user.role,
         isDemo: Boolean(user.isDemo),
+        language,
       }
     } catch {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
@@ -174,7 +183,11 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: {
+            // Aoede is multilingual and handles both Indian English and
+            // Hindi natively. languageCode tells the model which language
+            // to speak in for this session.
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Aoede' } },
+            languageCode: ctx.language,
           },
         },
         systemInstruction: {
