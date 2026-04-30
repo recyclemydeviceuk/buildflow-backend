@@ -32,7 +32,7 @@ const cleanString = (value: unknown): string =>
 
 export const handleMakeLead = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const configuredToken = process.env.MAKE_WEBHOOK_TOKEN
+    const configuredToken = process.env.MAKE_LEAD_TOKEN || process.env.MAKE_WEBHOOK_TOKEN
     const providedToken =
       cleanString(req.get('x-make-token')) ||
       cleanString(req.query.token) ||
