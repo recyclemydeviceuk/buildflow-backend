@@ -28,16 +28,21 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     }
   }
 
-  const nestedFields = Array.isArray(payload?.fields)
-    ? payload.fields.map((field, index) =>
+  // Accept Elementor Pro's native shape: `form_fields[id]=value` (urlencoded)
+  // arrives as payload.form_fields = { id: value }. Treat it as an alias for `fields`.
+  const fieldsSource = payload?.fields ?? payload?.form_fields ?? null
+
+  const nestedFields = Array.isArray(fieldsSource)
+    ? fieldsSource.map((field, index) =>
         normalizeFieldEntry(String(field?.id || field?.custom_id || field?.title || field?.label || index), field)
       )
-    : payload?.fields && typeof payload.fields === 'object'
-      ? Object.entries(payload.fields).map(([key, value]) => normalizeFieldEntry(key, value))
+    : fieldsSource && typeof fieldsSource === 'object'
+      ? Object.entries(fieldsSource).map(([key, value]) => normalizeFieldEntry(key, value))
       : []
 
   const reservedTopLevelKeys = new Set([
     'fields',
+    'form_fields',
     'token',
     'name',
     'phone',
@@ -49,6 +54,8 @@ const parseWebsiteLeadPayload = (payload: Record<string, any>) => {
     'form_name',
     'formName',
     'form',
+    'form_id',
+    'formId',
     'utmSource',
     'utm_source',
     'utmMedium',
