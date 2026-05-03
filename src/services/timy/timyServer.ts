@@ -342,6 +342,24 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
     if (msg.setupComplete) {
       setupComplete = true
       safeClientSend({ type: 'setupComplete' })
+      // Nudge Gemini to greet first. Without this, Live mode silently waits
+      // for the user to speak, which feels broken when they just opened the
+      // panel. Skip on history-bearing reconnects (language switch) — the
+      // prompt already tells the model not to re-greet there.
+      if (!ctx.history || ctx.history.length === 0) {
+        try {
+          upstream?.send(
+            JSON.stringify({
+              clientContent: {
+                turns: [{ role: 'user', parts: [{ text: '<<session_start>>' }] }],
+                turnComplete: true,
+              },
+            })
+          )
+        } catch (err) {
+          logger.warn('Timy: failed to send session-start nudge', err)
+        }
+      }
       return
     }
 
