@@ -114,17 +114,6 @@ const buildStatusNote = (status: string, note: string, req: Request) => ({
   createdByName: req.user!.name,
 })
 
-const syncLatestLeadNote = (lead: any) => {
-  const allNotes = [...(lead.statusNotes || [])].sort(
-    (a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)
-  )
-
-  const latest = allNotes[0]
-  lead.notes = latest?.note || null
-  lead.lastActivityNote = latest?.note || null
-  lead.lastActivity = new Date()
-}
-
 const hasMeaningfulValue = (value: unknown): boolean => String(value ?? '').trim().length > 0
 
 const parseImportJson = <T>(value: unknown, fallback: T): T => {
@@ -2161,6 +2150,10 @@ export const updateDisposition = async (req: Request, res: Response, next: NextF
       return res.status(403).json({ success: false, message: 'You do not have access to update this lead' })
     }
 
+    if (!disposition || !DISPOSITIONS.includes(disposition)) {
+      return res.status(400).json({ success: false, message: `Valid status is required. Allowed: ${DISPOSITIONS.join(', ')}` })
+    }
+
     const before = existing.toObject()
     const nextNote = typeof notes === 'string' ? notes.trim() : ''
     if (!nextNote) {
@@ -2169,12 +2162,23 @@ export const updateDisposition = async (req: Request, res: Response, next: NextF
         message: 'A note is required whenever you change the lead status',
       })
     }
-    existing.disposition = disposition
-    existing.lastActivityNote = nextNote
-    existing.notes = nextNote
-    existing.statusNotes = [...(existing.statusNotes || []), buildStatusNote(disposition, nextNote, req)]
-    existing.lastActivity = new Date()
-    await existing.save()
+
+    // Atomic update — avoids re-validating unrelated pre-existing fields
+    // (e.g. an empty city left over from a partial import) which would
+    // otherwise throw ValidationError on doc.save() and surface as a 500.
+    const updated = await Lead.findByIdAndUpdate(
+      existing._id,
+      {
+        $set: {
+          disposition,
+          lastActivityNote: nextNote,
+          notes: nextNote,
+          lastActivity: new Date(),
+        },
+        $push: { statusNotes: buildStatusNote(disposition, nextNote, req) },
+      },
+      { new: true }
+    )
 
     await AuditLog.create({
       actor: req.user!.id,
@@ -2184,10 +2188,10 @@ export const updateDisposition = async (req: Request, res: Response, next: NextF
       entity: 'Lead',
       entityId: req.params.id,
       before,
-      after: existing.toObject(),
+      after: updated!.toObject(),
     })
 
-    return res.status(200).json({ success: true, data: existing })
+    return res.status(200).json({ success: true, data: updated })
   } catch (err) {
     next(err)
   }
@@ -2215,9 +2219,25 @@ export const addStatusNote = async (req: Request, res: Response, next: NextFunct
     }
 
     const before = existing.toObject()
-    existing.statusNotes = [...(existing.statusNotes || []), buildStatusNote(status, trimmedNote, req)]
-    syncLatestLeadNote(existing)
-    await existing.save()
+    const newNote = buildStatusNote(status, trimmedNote, req)
+    const projectedNotes = [...(existing.statusNotes || []), newNote]
+    const latest = [...projectedNotes].sort(
+      (a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)
+    )[0]
+
+    // Atomic update — see note in updateDisposition for why we avoid doc.save()
+    const updated = await Lead.findByIdAndUpdate(
+      existing._id,
+      {
+        $set: {
+          notes: latest?.note || null,
+          lastActivityNote: latest?.note || null,
+          lastActivity: new Date(),
+        },
+        $push: { statusNotes: newNote },
+      },
+      { new: true }
+    )
 
     await AuditLog.create({
       actor: req.user!.id,
@@ -2227,10 +2247,10 @@ export const addStatusNote = async (req: Request, res: Response, next: NextFunct
       entity: 'Lead',
       entityId: req.params.id,
       before,
-      after: existing.toObject(),
+      after: updated!.toObject(),
     })
 
-    return res.status(200).json({ success: true, data: existing })
+    return res.status(200).json({ success: true, data: updated })
   } catch (err) {
     next(err)
   }
@@ -2265,10 +2285,28 @@ export const updateStatusNote = async (req: Request, res: Response, next: NextFu
     }
 
     const before = existing.toObject()
-    noteEntry.status = status
-    noteEntry.note = trimmedNote
-    syncLatestLeadNote(existing)
-    await existing.save()
+    const updatedNotes = (existing.statusNotes as Array<any>).map((item) =>
+      String(item?._id) === String(req.params.noteId)
+        ? { ...(typeof item?.toObject === 'function' ? item.toObject() : item), status, note: trimmedNote }
+        : (typeof item?.toObject === 'function' ? item.toObject() : item)
+    )
+    const latest = [...updatedNotes].sort(
+      (a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)
+    )[0]
+
+    // Atomic update — see note in updateDisposition for why we avoid doc.save()
+    const updated = await Lead.findByIdAndUpdate(
+      existing._id,
+      {
+        $set: {
+          statusNotes: updatedNotes,
+          notes: latest?.note || null,
+          lastActivityNote: latest?.note || null,
+          lastActivity: new Date(),
+        },
+      },
+      { new: true }
+    )
 
     await AuditLog.create({
       actor: req.user!.id,
@@ -2278,10 +2316,10 @@ export const updateStatusNote = async (req: Request, res: Response, next: NextFu
       entity: 'Lead',
       entityId: req.params.id,
       before,
-      after: existing.toObject(),
+      after: updated!.toObject(),
     })
 
-    return res.status(200).json({ success: true, data: existing })
+    return res.status(200).json({ success: true, data: updated })
   } catch (err) {
     next(err)
   }
@@ -2305,11 +2343,26 @@ export const deleteStatusNote = async (req: Request, res: Response, next: NextFu
     }
 
     const before = existing.toObject()
-    existing.statusNotes = (existing.statusNotes as Array<any>).filter(
-      (item) => String(item?._id) !== String(req.params.noteId)
+    const remainingNotes = (existing.statusNotes as Array<any>)
+      .filter((item) => String(item?._id) !== String(req.params.noteId))
+      .map((item) => (typeof item?.toObject === 'function' ? item.toObject() : item))
+    const latest = [...remainingNotes].sort(
+      (a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt)
+    )[0]
+
+    // Atomic update — see note in updateDisposition for why we avoid doc.save()
+    const updated = await Lead.findByIdAndUpdate(
+      existing._id,
+      {
+        $set: {
+          statusNotes: remainingNotes,
+          notes: latest?.note || null,
+          lastActivityNote: latest?.note || null,
+          lastActivity: new Date(),
+        },
+      },
+      { new: true }
     )
-    syncLatestLeadNote(existing)
-    await existing.save()
 
     await AuditLog.create({
       actor: req.user!.id,
@@ -2319,10 +2372,10 @@ export const deleteStatusNote = async (req: Request, res: Response, next: NextFu
       entity: 'Lead',
       entityId: req.params.id,
       before,
-      after: existing.toObject(),
+      after: updated!.toObject(),
     })
 
-    return res.status(200).json({ success: true, data: existing })
+    return res.status(200).json({ success: true, data: updated })
   } catch (err) {
     next(err)
   }
@@ -2484,6 +2537,22 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
 
 // ==================== FollowUp Controllers ====================
 
+// Recompute lead.nextFollowUp from the FollowUp collection. Atomic update
+// avoids triggering full-document Mongoose validation on the lead — important
+// because legacy/imported leads may have empty required fields (e.g. city)
+// that would otherwise throw ValidationError and silently leave nextFollowUp
+// pointing at an already-completed follow-up.
+const recomputeLeadNextFollowUp = async (leadId: mongoose.Types.ObjectId | string) => {
+  const objectId = typeof leadId === 'string' ? new mongoose.Types.ObjectId(leadId) : leadId
+  const [next] = await FollowUp.find({ lead: objectId, status: 'pending' })
+    .sort({ scheduledAt: 1 })
+    .limit(1)
+  await Lead.updateOne(
+    { _id: objectId },
+    { $set: { nextFollowUp: next ? next.scheduledAt : null } }
+  )
+}
+
 export const getLeadFollowUps = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params
@@ -2506,6 +2575,18 @@ export const getLeadFollowUps = async (req: Request, res: Response, next: NextFu
     const followUps = await FollowUp.find({ lead: new mongoose.Types.ObjectId(id) })
       .sort({ scheduledAt: -1 })
       .lean()
+
+    // Heal stale lead.nextFollowUp: if the cached date doesn't match the
+    // earliest still-pending follow-up, fix it. This recovers leads whose
+    // nextFollowUp was orphaned by a prior failed save() (pre-fix behavior).
+    const earliestPending = [...followUps]
+      .filter((f) => f.status === 'pending')
+      .sort((a, b) => +new Date(a.scheduledAt) - +new Date(b.scheduledAt))[0]
+    const expected = earliestPending ? new Date(earliestPending.scheduledAt).getTime() : null
+    const actual = lead.nextFollowUp ? new Date(lead.nextFollowUp).getTime() : null
+    if (expected !== actual) {
+      void recomputeLeadNextFollowUp(lead._id as mongoose.Types.ObjectId).catch(() => null)
+    }
 
     return res.status(200).json({ success: true, data: followUps })
   } catch (err) {
@@ -2548,16 +2629,7 @@ export const createFollowUp = async (req: Request, res: Response, next: NextFunc
       notificationStates: [],
     })
 
-    // Update lead's nextFollowUp field if this is the earliest pending follow-up
-    const allFollowUps = await FollowUp.find({
-      lead: new mongoose.Types.ObjectId(id),
-      status: 'pending',
-    }).sort({ scheduledAt: 1 }).limit(1)
-
-    if (allFollowUps.length > 0) {
-      lead.nextFollowUp = allFollowUps[0].scheduledAt
-      await lead.save()
-    }
+    await recomputeLeadNextFollowUp(lead._id as mongoose.Types.ObjectId)
 
     await AuditLog.create({
       actor: req.user!.id,
@@ -2620,15 +2692,8 @@ export const updateFollowUp = async (req: Request, res: Response, next: NextFunc
 
     await followUp.save()
 
-    // Update lead's nextFollowUp if needed
     if (lead) {
-      const pendingFollowUps = await FollowUp.find({
-        lead: new mongoose.Types.ObjectId(id),
-        status: 'pending',
-      }).sort({ scheduledAt: 1 }).limit(1)
-
-      lead.nextFollowUp = pendingFollowUps.length > 0 ? pendingFollowUps[0].scheduledAt : null
-      await lead.save()
+      await recomputeLeadNextFollowUp(lead._id as mongoose.Types.ObjectId)
     }
 
     await AuditLog.create({
@@ -2675,15 +2740,8 @@ export const deleteFollowUp = async (req: Request, res: Response, next: NextFunc
 
     await FollowUp.findByIdAndDelete(followUpId)
 
-    // Update lead's nextFollowUp if needed
     if (lead) {
-      const pendingFollowUps = await FollowUp.find({
-        lead: new mongoose.Types.ObjectId(id),
-        status: 'pending',
-      }).sort({ scheduledAt: 1 }).limit(1)
-
-      lead.nextFollowUp = pendingFollowUps.length > 0 ? pendingFollowUps[0].scheduledAt : null
-      await lead.save()
+      await recomputeLeadNextFollowUp(lead._id as mongoose.Types.ObjectId)
     }
 
     await AuditLog.create({
