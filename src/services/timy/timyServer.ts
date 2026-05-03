@@ -154,6 +154,83 @@ export const initTimyWebSocketServer = (httpServer: http.Server): void => {
   })
 }
 
+// Build a one-line, user-facing summary of a tool result for the activity
+// card. Kept here (not in timyTools) because the shape is purely a UI concern.
+const summarizeToolResult = (
+  name: string,
+  args: Record<string, any>,
+  result: any,
+  ok: boolean
+): string => {
+  if (!ok) {
+    if (result && typeof result === 'object' && typeof result.error === 'string') {
+      return result.error
+    }
+    return 'Failed'
+  }
+  if (!result || typeof result !== 'object') return 'Done'
+  switch (name) {
+    case 'find_lead':
+    case 'list_recent_leads':
+      return typeof result.count === 'number'
+        ? `${result.count} ${result.count === 1 ? 'lead' : 'leads'}`
+        : 'Done'
+    case 'count_leads_by_disposition':
+      return typeof result.total === 'number' ? `${result.total} leads grouped` : 'Done'
+    case 'get_today_followups':
+      return typeof result.count === 'number'
+        ? `${result.count} due today`
+        : 'Done'
+    case 'get_overdue_followups':
+      return typeof result.count === 'number'
+        ? `${result.count} overdue`
+        : 'Done'
+    case 'get_my_recent_calls':
+      return typeof result.count === 'number'
+        ? `${result.count} ${result.count === 1 ? 'call' : 'calls'}`
+        : 'Done'
+    case 'get_team_overview':
+      return Array.isArray(result.reps) ? `${result.reps.length} reps` : 'Done'
+    case 'find_team_member':
+      return typeof result.count === 'number' ? `${result.count} matches` : 'Done'
+    case 'get_my_pipeline_summary':
+      if (typeof result.leadsOwned === 'number') {
+        return `${result.leadsOwned} leads · ${result.followUpsDueToday} today · ${result.overdueFollowUps} overdue`
+      }
+      return 'Done'
+    case 'create_lead':
+      return result.name ? `Created ${result.name}` : 'Lead created'
+    case 'update_lead_disposition':
+      return result.disposition ? `Set to ${result.disposition}` : 'Status updated'
+    case 'add_lead_note':
+      return 'Note added'
+    case 'assign_lead':
+      return result.assignedTo ? `Assigned to ${result.assignedTo}` : 'Unassigned'
+    case 'delete_lead':
+      return result.deletedLeadName ? `Deleted ${result.deletedLeadName}` : 'Lead deleted'
+    case 'schedule_followup':
+      if (result.scheduledAt) {
+        const d = new Date(result.scheduledAt)
+        return `Scheduled · ${d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} ${d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}`
+      }
+      return 'Follow-up scheduled'
+    case 'complete_followup':
+      return 'Marked done'
+    case 'cancel_followup':
+      return 'Cancelled'
+    case 'set_rep_lead_receiving':
+      return result.acceptingNewLeads
+        ? `${result.name} accepting leads`
+        : `${result.name} blocked from new leads`
+    case 'set_my_availability':
+      return result.status === 'offline' ? 'You are offline' : 'You are available'
+    case 'switch_language':
+      return result.language ? `Switching to ${result.language}` : 'Language switched'
+    default:
+      return 'Done'
+  }
+}
+
 const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
   let upstream: WebSocket | null = null
   let setupComplete = false
@@ -276,7 +353,17 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
       const calls: any[] = msg.toolCall.functionCalls || []
       const responses: any[] = []
       for (const fc of calls) {
-        safeClientSend({ type: 'toolCall', name: fc.name, args: fc.args })
+        const callId = fc.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const startedAt = Date.now()
+        // toolStart kicks off the activity card in the UI immediately so the
+        // user sees what Timy is doing before the (potentially slow) handler
+        // resolves.
+        safeClientSend({
+          type: 'toolStart',
+          id: callId,
+          name: fc.name,
+          args: fc.args || {},
+        })
         try {
           const result = await runTimyTool(fc.name, fc.args || {}, ctx)
           responses.push({
@@ -284,13 +371,26 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
             name: fc.name,
             response: { output: result },
           })
+          const ok = !(result && typeof result === 'object' && 'error' in result)
+          safeClientSend({
+            type: 'toolResult',
+            id: callId,
+            name: fc.name,
+            ok,
+            summary: summarizeToolResult(fc.name, fc.args || {}, result, ok),
+            durationMs: Date.now() - startedAt,
+          })
           // Intercept: when the model decides to switch language, tell the
           // browser to flip its UI toggle and reconnect in the new language.
           // The actual voice only changes on a fresh upstream session because
           // speechConfig.languageCode + voiceConfig are bound at setup time.
           if (fc.name === 'switch_language') {
             const target =
-              fc.args?.language === 'hi-IN' ? 'hi-IN' : 'en-IN'
+              fc.args?.language === 'hi-IN'
+                ? 'hi-IN'
+                : fc.args?.language === 'kn-IN'
+                ? 'kn-IN'
+                : 'en-IN'
             safeClientSend({ type: 'language_switch', language: target })
           }
         } catch (err: any) {
@@ -299,6 +399,14 @@ const attachTimySession = (clientWs: WebSocket, ctx: TimyContext): void => {
             id: fc.id,
             name: fc.name,
             response: { error: err?.message || 'Tool failed' },
+          })
+          safeClientSend({
+            type: 'toolResult',
+            id: callId,
+            name: fc.name,
+            ok: false,
+            summary: err?.message || 'Tool failed',
+            durationMs: Date.now() - startedAt,
           })
         }
       }
