@@ -1385,10 +1385,25 @@ export const getFollowUpCounts = async (req: Request, res: Response, next: NextF
     const startOfWeekFwd = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000)
 
     const baseFilter: Record<string, unknown> = {}
-    if (owner && mongoose.Types.ObjectId.isValid(owner)) {
-      baseFilter.owner = new mongoose.Types.ObjectId(owner)
-    } else if (owner && normalizeComparator(owner) === 'unassigned') {
+    // Owner can be a single value, 'unassigned', or comma-separated list of
+    // ObjectIds (optionally including 'unassigned'). Mirrors the parsing the
+    // /leads endpoint uses so the badge counts stay in sync with the filter.
+    const ownerTokens = String(owner || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s && normalizeComparator(s) !== 'all')
+    const ownerIds: mongoose.Types.ObjectId[] = []
+    let countsIncludeUnassigned = false
+    for (const o of ownerTokens) {
+      if (normalizeComparator(o) === 'unassigned') countsIncludeUnassigned = true
+      else if (mongoose.Types.ObjectId.isValid(o)) ownerIds.push(new mongoose.Types.ObjectId(o))
+    }
+    if (ownerIds.length > 0 && !countsIncludeUnassigned) {
+      baseFilter.owner = ownerIds.length === 1 ? ownerIds[0] : { $in: ownerIds }
+    } else if (ownerIds.length === 0 && countsIncludeUnassigned) {
       baseFilter.owner = null
+    } else if (ownerIds.length > 0 && countsIncludeUnassigned) {
+      baseFilter.$or = [{ owner: null }, { owner: { $in: ownerIds } }]
     }
     const notTerminal = { disposition: { $nin: TERMINAL_DISPOSITIONS } }
 
@@ -1552,6 +1567,16 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     const normalizedDateFrom = String(dateFrom || '').trim()
     const normalizedDateTo = String(dateTo || '').trim()
 
+    // Multi-select support: every filter param can now arrive as a single
+    // value ("New") or comma-separated list ("New,Qualified,Visit Done").
+    // We keep the original param name for backwards compatibility — older
+    // callers passing a single value still hit the same code path.
+    const parseList = (raw: string): string[] =>
+      raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s && normalizeComparator(s) !== 'all')
+
     if (normalizedSearch) {
       filter.$or = [
         { name: { $regex: normalizedSearch, $options: 'i' } },
@@ -1560,27 +1585,62 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
         { email: { $regex: normalizedSearch, $options: 'i' } },
       ]
     }
-    if (normalizedDisposition && normalizeComparator(normalizedDisposition) !== 'all') {
-      filter.disposition = resolveDisposition(normalizedDisposition)
+
+    const dispositionList = parseList(normalizedDisposition)
+    if (dispositionList.length === 1) {
+      filter.disposition = resolveDisposition(dispositionList[0])
+    } else if (dispositionList.length > 1) {
+      filter.disposition = { $in: dispositionList.map(resolveDisposition) }
     }
-    if (normalizedSource && normalizeComparator(normalizedSource) !== 'all') {
-      filter.source = resolveSource(normalizedSource)
+
+    const sourceList = parseList(normalizedSource)
+    if (sourceList.length === 1) {
+      filter.source = resolveSource(sourceList[0])
+    } else if (sourceList.length > 1) {
+      filter.source = { $in: sourceList.map(resolveSource) }
     }
-    if (normalizedCity && normalizeComparator(normalizedCity) !== 'all') {
-      filter.city = normalizedCity
+
+    const cityList = parseList(normalizedCity)
+    if (cityList.length === 1) {
+      filter.city = cityList[0]
+    } else if (cityList.length > 1) {
+      filter.city = { $in: cityList }
     }
-    if (normalizeComparator(normalizedOwner) === 'unassigned') {
+
+    // Owner: 'unassigned' (= null) can mix with concrete ObjectIds. When both
+    // are selected we wire it up as an $or clause that goes inside $and so it
+    // doesn't collide with the search $or above.
+    const ownerList = parseList(normalizedOwner)
+    const ownerIds: mongoose.Types.ObjectId[] = []
+    let includeUnassigned = false
+    for (const o of ownerList) {
+      if (normalizeComparator(o) === 'unassigned') {
+        includeUnassigned = true
+      } else if (mongoose.Types.ObjectId.isValid(o)) {
+        ownerIds.push(new mongoose.Types.ObjectId(o))
+      }
+    }
+    const addAndClause = (clause: Record<string, unknown>) => {
+      const existingAnd = Array.isArray(filter.$and) ? (filter.$and as Record<string, unknown>[]) : []
+      filter.$and = [...existingAnd, clause]
+    }
+    if (ownerIds.length > 0 && !includeUnassigned) {
+      filter.owner = ownerIds.length === 1 ? ownerIds[0] : { $in: ownerIds }
+    } else if (ownerIds.length === 0 && includeUnassigned) {
       filter.owner = null
-    } else if (normalizedOwner && normalizeComparator(normalizedOwner) !== 'all' && mongoose.Types.ObjectId.isValid(normalizedOwner)) {
-      filter.owner = new mongoose.Types.ObjectId(normalizedOwner)
+    } else if (ownerIds.length > 0 && includeUnassigned) {
+      addAndClause({
+        $or: [{ owner: null }, { owner: { $in: ownerIds } }],
+      })
     }
+
     if (normalizedReminderStatus && normalizeComparator(normalizedReminderStatus) !== 'all') {
       filter.reminderStatus = normalizedReminderStatus
     }
 
-    // Follow-up filter. Terminal dispositions are excluded from "without" /
-    // "overdue" because closed leads never need ongoing follow-ups.
-    const normalizedFollowUp = String(followUp || '').trim().toLowerCase()
+    // Follow-up filter. Terminal dispositions are excluded from every bucket
+    // except "with" because closed leads never need ongoing follow-ups.
+    // Multi-select is supported — selecting "today,overdue" returns the union.
     const TERMINAL_DISPOSITIONS = ['Failed', 'Booking Done', 'Agreement Done']
 
     // Compute reusable day-boundary timestamps in server local time. Close
@@ -1591,38 +1651,52 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     const _startOfDayAfter = new Date(_startOfToday.getTime() + 2 * 24 * 60 * 60 * 1000)
     const _startOfWeekFwd = new Date(_startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000)
 
-    if (normalizedFollowUp === 'with') {
-      filter.nextFollowUp = { $ne: null, $exists: true }
-    } else if (normalizedFollowUp === 'without') {
-      filter.$and = [
-        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
-        { $or: [{ nextFollowUp: null }, { nextFollowUp: { $exists: false } }] },
-        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
-      ]
-    } else if (normalizedFollowUp === 'overdue') {
-      filter.nextFollowUp = { $ne: null, $lt: _now }
-      filter.$and = [
-        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
-        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
-      ]
-    } else if (normalizedFollowUp === 'today') {
-      filter.nextFollowUp = { $gte: _startOfToday, $lt: _startOfTomorrow }
-      filter.$and = [
-        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
-        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
-      ]
-    } else if (normalizedFollowUp === 'tomorrow') {
-      filter.nextFollowUp = { $gte: _startOfTomorrow, $lt: _startOfDayAfter }
-      filter.$and = [
-        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
-        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
-      ]
-    } else if (normalizedFollowUp === 'thisweek' || normalizedFollowUp === 'this-week') {
-      filter.nextFollowUp = { $gte: _startOfToday, $lt: _startOfWeekFwd }
-      filter.$and = [
-        ...(Array.isArray(filter.$and) ? (filter.$and as any[]) : []),
-        { disposition: { $nin: TERMINAL_DISPOSITIONS } },
-      ]
+    const buildFollowUpClause = (bucket: string): Record<string, unknown> | null => {
+      switch (bucket) {
+        case 'with':
+          return { nextFollowUp: { $ne: null, $exists: true } }
+        case 'without':
+          return {
+            $and: [
+              { $or: [{ nextFollowUp: null }, { nextFollowUp: { $exists: false } }] },
+              { disposition: { $nin: TERMINAL_DISPOSITIONS } },
+            ],
+          }
+        case 'overdue':
+          return {
+            nextFollowUp: { $ne: null, $lt: _now },
+            disposition: { $nin: TERMINAL_DISPOSITIONS },
+          }
+        case 'today':
+          return {
+            nextFollowUp: { $gte: _startOfToday, $lt: _startOfTomorrow },
+            disposition: { $nin: TERMINAL_DISPOSITIONS },
+          }
+        case 'tomorrow':
+          return {
+            nextFollowUp: { $gte: _startOfTomorrow, $lt: _startOfDayAfter },
+            disposition: { $nin: TERMINAL_DISPOSITIONS },
+          }
+        case 'thisweek':
+        case 'this-week':
+          return {
+            nextFollowUp: { $gte: _startOfToday, $lt: _startOfWeekFwd },
+            disposition: { $nin: TERMINAL_DISPOSITIONS },
+          }
+        default:
+          return null
+      }
+    }
+
+    const followUpBuckets = parseList(String(followUp || '').toLowerCase())
+    const followUpClauses = followUpBuckets
+      .map(buildFollowUpClause)
+      .filter((c): c is Record<string, unknown> => c !== null)
+
+    if (followUpClauses.length === 1) {
+      addAndClause(followUpClauses[0])
+    } else if (followUpClauses.length > 1) {
+      addAndClause({ $or: followUpClauses })
     }
 
     const parsedDateFrom = normalizedDateFrom ? new Date(normalizedDateFrom) : null
