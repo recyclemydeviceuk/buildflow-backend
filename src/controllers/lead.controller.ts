@@ -1547,6 +1547,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
 
       search,
       disposition,
+      excludeDispositions,
       source,
       city,
       owner,
@@ -1555,6 +1556,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
       dateTo,
       dateField,
       followUp,
+      failedReason,
     } = req.query as Record<string, string>
 
     const filter: Record<string, unknown> = {}
@@ -1591,6 +1593,36 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
       filter.disposition = resolveDisposition(dispositionList[0])
     } else if (dispositionList.length > 1) {
       filter.disposition = { $in: dispositionList.map(resolveDisposition) }
+    }
+
+    // Negative filter — used by the My Leads view to exclude 'Failed' so
+    // failed leads only show up on the dedicated Failed Leads page. If a
+    // positive disposition filter was already applied above, the exclusion
+    // is OR'd in via $nin so both restrictions hold.
+    const excludeDispositionList = parseList(String(excludeDispositions || ''))
+    if (excludeDispositionList.length > 0) {
+      const resolvedExcluded = excludeDispositionList.map(resolveDisposition)
+      if (filter.disposition === undefined) {
+        filter.disposition = { $nin: resolvedExcluded }
+      } else if (
+        typeof filter.disposition === 'object' &&
+        filter.disposition !== null &&
+        '$in' in (filter.disposition as Record<string, unknown>)
+      ) {
+        // Both $in and $nin can co-exist on the same field.
+        ;(filter.disposition as Record<string, unknown>).$nin = resolvedExcluded
+      }
+      // If a single concrete disposition was already set we don't need $nin —
+      // the positive filter is stricter than any exclusion list.
+    }
+
+    // failedReason filter — only meaningful on the Failed Leads view, but the
+    // backend accepts it on any query. Multi-select via comma-separated list.
+    const failedReasonList = parseList(String(failedReason || ''))
+    if (failedReasonList.length === 1) {
+      filter.failedReason = failedReasonList[0]
+    } else if (failedReasonList.length > 1) {
+      filter.failedReason = { $in: failedReasonList }
     }
 
     const sourceList = parseList(normalizedSource)
