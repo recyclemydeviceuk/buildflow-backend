@@ -2512,6 +2512,15 @@ const EXPORTABLE_FIELDS = [
   { key: 'nextFollowUp', label: 'Next Follow Up' },
   { key: 'createdAt', label: 'Created At' },
   { key: 'updatedAt', label: 'Updated At' },
+  // Computed columns derived from statusNotes — useful for re-targeting
+  // failed leads that previously reached a visit / meeting milestone.
+  { key: 'priorMilestones', label: 'Prior Milestones' },
+  { key: 'visitDoneNote', label: 'Visit Done Note' },
+  { key: 'visitDoneAt', label: 'Visit Done At' },
+  { key: 'meetingDoneNote', label: 'Meeting Done Note' },
+  { key: 'meetingDoneAt', label: 'Meeting Done At' },
+  { key: 'failedNote', label: 'Failed Note' },
+  { key: 'failedAt', label: 'Failed At' },
 ]
 
 export const exportLeads = async (req: Request, res: Response, next: NextFunction) => {
@@ -2520,18 +2529,42 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
       return res.status(403).json({ success: false, message: 'Only managers can export leads' })
     }
 
-    const { dateRange, fields, format = 'csv', owner } = req.body
-    
+    const { dateRange, fields, format = 'csv', owner, priorMilestoneOnly } = req.body
+
     // Validate date range
     const validDateRanges = ['today', 'week', 'month', 'lifetime']
     if (!dateRange || !validDateRanges.includes(dateRange)) {
       return res.status(400).json({ success: false, message: 'Valid dateRange is required (today, week, month, lifetime)' })
     }
 
-    // Validate fields
-    const fieldsToExport = fields && Array.isArray(fields) && fields.length > 0 
-      ? fields 
-      : EXPORTABLE_FIELDS.map(f => f.key)
+    // Validate fields. The "Prior milestone failed leads" preset (toggle on
+    // the export modal) carries its own field defaults so the resulting CSV
+    // is immediately useful for re-targeting — agent, lead, milestone notes,
+    // why they failed.
+    const priorMilestonePreset = [
+      'name',
+      'phone',
+      'alternatePhone',
+      'email',
+      'city',
+      'source',
+      'ownerName',
+      'priorMilestones',
+      'visitDoneAt',
+      'visitDoneNote',
+      'meetingDoneAt',
+      'meetingDoneNote',
+      'failedReason',
+      'failedAt',
+      'failedNote',
+      'updatedAt',
+    ]
+    const fieldsToExport: string[] =
+      fields && Array.isArray(fields) && fields.length > 0
+        ? fields
+        : priorMilestoneOnly
+          ? priorMilestonePreset
+          : EXPORTABLE_FIELDS.map((f) => f.key)
     
     // Build date filter
     const now = new Date()
@@ -2567,16 +2600,43 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
       query.createdAt = { $gte: dateFrom }
     }
 
+    // Prior-milestone filter — narrows to Failed leads whose status history
+    // includes at least one Visit Done OR Meeting Done entry. These are the
+    // most valuable failed leads to re-target: someone already invested time
+    // walking the site or doing the video call before things fell apart.
+    if (priorMilestoneOnly) {
+      query.disposition = 'Failed'
+      query.statusNotes = {
+        $elemMatch: { status: { $in: ['Visit Done', 'Meeting Done'] } },
+      }
+    }
+
     // Fetch all matching leads (no pagination for export)
     const leads = await Lead.find(query)
       .populate('owner', 'name email phone')
       .sort({ createdAt: -1 })
       .lean()
 
+    // Helper: pull the most-recent statusNotes entry for a given disposition
+    // off a lead. Returns null when the lead never reached that milestone.
+    const latestNoteFor = (lead: any, status: string) => {
+      const matches = (lead.statusNotes || []).filter((n: any) => n?.status === status)
+      if (matches.length === 0) return null
+      return matches.reduce((latest: any, current: any) => {
+        const a = latest?.createdAt ? new Date(latest.createdAt).getTime() : 0
+        const b = current?.createdAt ? new Date(current.createdAt).getTime() : 0
+        return b >= a ? current : latest
+      }, matches[0])
+    }
+
     // Transform leads for export
     const exportData = leads.map((lead: any) => {
       const row: Record<string, any> = {}
-      
+
+      const visitDone = latestNoteFor(lead, 'Visit Done')
+      const meetingDone = latestNoteFor(lead, 'Meeting Done')
+      const failed = latestNoteFor(lead, 'Failed')
+
       fieldsToExport.forEach((field: string) => {
         switch (field) {
           case 'ownerName':
@@ -2591,11 +2651,36 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
           case 'nextFollowUp':
             row[field] = lead[field] ? new Date(lead[field]).toISOString() : ''
             break
+          case 'priorMilestones': {
+            const hits: string[] = []
+            if (visitDone) hits.push('Visit Done')
+            if (meetingDone) hits.push('Meeting Done')
+            row[field] = hits.join(', ')
+            break
+          }
+          case 'visitDoneNote':
+            row[field] = visitDone?.note || ''
+            break
+          case 'visitDoneAt':
+            row[field] = visitDone?.createdAt ? new Date(visitDone.createdAt).toISOString() : ''
+            break
+          case 'meetingDoneNote':
+            row[field] = meetingDone?.note || ''
+            break
+          case 'meetingDoneAt':
+            row[field] = meetingDone?.createdAt ? new Date(meetingDone.createdAt).toISOString() : ''
+            break
+          case 'failedNote':
+            row[field] = failed?.note || ''
+            break
+          case 'failedAt':
+            row[field] = failed?.createdAt ? new Date(failed.createdAt).toISOString() : ''
+            break
           default:
             row[field] = lead[field] ?? ''
         }
       })
-      
+
       return row
     })
 
