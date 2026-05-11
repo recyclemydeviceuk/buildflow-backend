@@ -4,6 +4,7 @@ import { Integration } from '../models/Integration'
 import { emitToTeam } from '../config/socket'
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 
 export const processGoogleLeadForm = async (gclid: string, formData: Record<string, string>): Promise<void> => {
   try {
@@ -65,6 +66,8 @@ export const processGoogleLeadForm = async (gclid: string, formData: Record<stri
     })
 
     void notifyNewLeadCreated(lead).catch(() => null)
+    // Apply manager-configured routing (city rules + unscoped fallback).
+    void routeLead(lead._id).catch(() => null)
 
     logger.info('Google lead created', { leadId: lead._id, gclid })
   } catch (err) {

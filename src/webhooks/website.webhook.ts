@@ -3,6 +3,7 @@ import { emitToTeam } from '../config/socket'
 import { WebsiteLeadPayload } from '../types/webhook.types'
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 
 const normalizePhone = (value: string): string => value.replace(/\D/g, '')
 
@@ -137,6 +138,10 @@ export const processWebsiteLead = async (payload: WebsiteLeadPayload): Promise<v
 
     // existingLead path returned above, so this is guaranteed a new lead.
     void notifyNewLeadCreated(lead).catch(() => null)
+    // Apply the manager-configured routing rules (city → rep mapping with
+    // an unscoped round-robin fallback). Fire-and-forget — routing failures
+    // never reject a webhook delivery.
+    void routeLead(lead._id).catch(() => null)
 
     logger.info('Website lead created', { leadId: lead._id })
   } catch (err) {

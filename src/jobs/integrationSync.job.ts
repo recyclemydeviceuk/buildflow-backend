@@ -5,6 +5,7 @@ import { Lead } from '../models/Lead'
 import { emitToTeam } from '../config/socket'
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 
 class IntegrationSyncJob {
   private isRunning = false
@@ -85,7 +86,9 @@ class IntegrationSyncJob {
             })
 
             void notifyNewLeadCreated(newLead).catch(() => null)
-            
+            // Apply manager-configured routing (city rules + unscoped fallback).
+            void routeLead(newLead._id).catch(() => null)
+
             logger.info('Google Ads lead auto-synced', { leadId: lead.id, name })
           }
         } catch (err) {
@@ -135,7 +138,9 @@ class IntegrationSyncJob {
             })
 
             void notifyNewLeadCreated(newLead).catch(() => null)
-            
+            // Apply manager-configured routing (city rules + unscoped fallback).
+            void routeLead(newLead._id).catch(() => null)
+
             logger.info('LinkedIn lead auto-synced', { leadId: lead.id, name: newLead.name })
           }
         } catch (err) {

@@ -6,6 +6,7 @@ import { Lead } from '../models/Lead'
 import { emitToTeam } from '../config/socket'
 import axios from 'axios'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 
 export const getIntegrations = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -223,7 +224,9 @@ export const fetchGoogleAdsLeadsToCRM = async (req: Request, res: Response, next
       })
 
       void notifyNewLeadCreated(newLead).catch(() => null)
-      
+      // Apply manager-configured routing (city rules + unscoped fallback).
+      void routeLead(newLead._id).catch(() => null)
+
       importedCount++
     }
     
@@ -284,7 +287,9 @@ export const fetchLinkedInLeadsToCRM = async (req: Request, res: Response, next:
       })
 
       void notifyNewLeadCreated(newLead).catch(() => null)
-      
+      // Apply manager-configured routing (city rules + unscoped fallback).
+      void routeLead(newLead._id).catch(() => null)
+
       importedCount++
     }
     

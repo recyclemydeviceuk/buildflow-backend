@@ -12,13 +12,53 @@ import { logger } from '../utils/logger'
  * 1. If the lead already has an owner → no-op (we never override manual/webhook assignments).
  * 2. If `Settings.leadRouting.mode` is not `'auto'` → no-op (manual mode is the default).
  * 3. City-specific rules win first: if the lead's city appears in any rule, that rule's rep
- *    is the owner.
+ *    is the owner. City comparison is alias-aware (Bangalore ↔ Bengaluru,
+ *    Mysore ↔ Mysuru, etc.) and case/space tolerant.
  * 4. Otherwise we pick the active representative with the oldest `lastAssignedLeadAt`
- *    (fair rotation that survives reps going on/off shift).
+ *    from the UNSCOPED pool — i.e. reps NOT listed in any city rule. A rep
+ *    bound to "Mysore" never gets a Bangalore lead, even when their
+ *    rotation comes up.
+ * 5. If no eligible rep exists, the lead stays unassigned. A manager can
+ *    pick it up from the Unassigned pool.
  *
  * Failures are swallowed so lead creation itself is never rejected because of routing.
  * Fire-and-forget this from any lead-entry point.
  */
+
+// Common Indian city aliases so a Meta lead form saying "Bengaluru" still
+// matches a rule the manager wrote as "Bangalore" (and vice versa). All
+// lookups are done in lower-case after trimming.
+const CITY_ALIASES: Record<string, string[]> = {
+  bangalore: ['bengaluru'],
+  bengaluru: ['bangalore'],
+  mysore: ['mysuru'],
+  mysuru: ['mysore'],
+  mumbai: ['bombay'],
+  bombay: ['mumbai'],
+  chennai: ['madras'],
+  madras: ['chennai'],
+  kolkata: ['calcutta'],
+  calcutta: ['kolkata'],
+  pune: ['poona'],
+  poona: ['pune'],
+  kochi: ['cochin'],
+  cochin: ['kochi'],
+  thiruvananthapuram: ['trivandrum'],
+  trivandrum: ['thiruvananthapuram'],
+}
+
+const normalizeCity = (raw: string): string => String(raw || '').trim().toLowerCase()
+
+const citiesMatch = (a: string, b: string): boolean => {
+  const na = normalizeCity(a)
+  const nb = normalizeCity(b)
+  if (!na || !nb) return false
+  if (na === nb) return true
+  if ((CITY_ALIASES[na] || []).includes(nb)) return true
+  if ((CITY_ALIASES[nb] || []).includes(na)) return true
+  return false
+}
+
 export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promise<{ id: string; name: string } | null> => {
   try {
     const lead = await Lead.findById(leadId)
@@ -32,18 +72,35 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
 
     const rules = settings.leadRouting.cityAssignmentRules || []
     const leadCity = (lead.city || '').trim()
-    const leadCityLower = leadCity.toLowerCase()
 
-    // 1) City-rule check — first matching rule wins.
-    // A rule can list one or many reps. If multiple, we round-robin WITHIN the
-    // rule by picking whichever of those reps has waited longest.
+    // Collect the set of rep IDs that are bound to ANY city rule. These reps
+    // are "city-scoped" — they only ever receive leads for their listed
+    // cities. They are explicitly excluded from the unscoped round-robin
+    // pool below, which is what stops a Mysore-scoped rep from being handed
+    // a Bangalore lead just because their rotation came up.
+    const scopedRepIds = new Set<string>()
+    for (const rule of rules) {
+      const ruleUserIds: any[] = Array.isArray((rule as any).userIds) && (rule as any).userIds.length
+        ? (rule as any).userIds
+        : (rule as any).userId
+        ? [(rule as any).userId]
+        : []
+      for (const u of ruleUserIds) {
+        if (u) scopedRepIds.add(String(u))
+      }
+    }
+
     let chosenRep: { _id: mongoose.Types.ObjectId; name: string } | null = null
+
+    // 1) City-rule check — first matching rule wins. Comparison is alias-
+    // aware so "Bangalore" rules apply to "Bengaluru" leads (and the other
+    // direction too).
     if (leadCity) {
       for (const rule of rules) {
-        const ruleCities = (rule.cities || []).map((c: string) => String(c).trim().toLowerCase())
-        if (!ruleCities.includes(leadCityLower)) continue
+        const ruleCities = rule.cities || []
+        const matched = ruleCities.some((c: string) => citiesMatch(c, leadCity))
+        if (!matched) continue
 
-        // Support both new multi-rep shape and legacy single-rep shape.
         const ruleUserIds: any[] = Array.isArray((rule as any).userIds) && (rule as any).userIds.length
           ? (rule as any).userIds
           : (rule as any).userId
@@ -51,6 +108,7 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
           : []
         if (ruleUserIds.length === 0) continue
 
+        // Within the rule, rotate fairly — oldest assignment wins.
         const candidate = await User.findOne({
           _id: { $in: ruleUserIds },
           role: 'representative',
@@ -73,27 +131,49 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
             repName: candidate.name,
           })
           break
+        } else {
+          // The rule matched but every rep in it is inactive / unavailable.
+          // Log it loudly — silently falling through to the global pool was
+          // the original cause of city-scoped misroutes (Bangalore leads
+          // landing on Mysore reps). We DO continue checking later rules,
+          // but we'll NOT use a city-scoped rep as a fallback.
+          logger.warn('City rule matched but no rep available', {
+            leadId: String(lead._id),
+            city: leadCity,
+            poolSize: ruleUserIds.length,
+          })
         }
       }
     }
 
-    // 2) Fallback — round-robin across all active reps by oldest lastAssignedLeadAt
+    // 2) Fallback — round-robin across UNSCOPED active reps only. A rep
+    // listed in any city rule is excluded here so a Mysore-scoped rep never
+    // catches a Bangalore lead via rotation. If no unscoped rep exists, the
+    // lead stays unassigned and a manager can route it manually.
     if (!chosenRep) {
       const rep = await User.findOne({
         role: 'representative',
         isActive: true,
         canReceiveLeads: { $ne: false },
+        _id: scopedRepIds.size > 0
+          ? { $nin: Array.from(scopedRepIds).map((id) => new mongoose.Types.ObjectId(id)) }
+          : { $exists: true },
       })
         .sort({ lastAssignedLeadAt: 1, createdAt: 1 })
         .select('_id name')
         .lean()
       if (!rep) {
-        logger.warn('Round-robin routing found no eligible representative', { leadId: String(lead._id) })
+        logger.warn('Round-robin routing found no eligible UNSCOPED representative', {
+          leadId: String(lead._id),
+          city: leadCity,
+          scopedRepCount: scopedRepIds.size,
+        })
         return null
       }
       chosenRep = { _id: rep._id as mongoose.Types.ObjectId, name: rep.name }
-      logger.info('Lead routed via round-robin', {
+      logger.info('Lead routed via round-robin (unscoped pool)', {
         leadId: String(lead._id),
+        city: leadCity,
         repId: String(rep._id),
         repName: rep.name,
       })

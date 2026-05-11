@@ -2,6 +2,7 @@ import { Lead } from '../models/Lead'
 import { emitToTeam } from '../config/socket'
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
+import { routeLead } from '../services/leadRouting.service'
 
 export const processLinkedInLead = async (leadData: Record<string, string>): Promise<void> => {
   try {
@@ -66,6 +67,8 @@ export const processLinkedInLead = async (leadData: Record<string, string>): Pro
     })
 
     void notifyNewLeadCreated(lead).catch(() => null)
+    // Apply manager-configured routing (city rules + unscoped fallback).
+    void routeLead(lead._id).catch(() => null)
 
     logger.info('LinkedIn lead created', { leadId: lead._id })
   } catch (err) {
