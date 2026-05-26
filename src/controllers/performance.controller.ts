@@ -11,8 +11,92 @@ const getDateRanges = () => {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000)
   const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
-  
+
   return { today, weekAgo, monthAgo }
+}
+
+/**
+ * Turnaround-time stats for a single rep.
+ *
+ * TAT (per lead) = time between the lead being assigned to this rep
+ * (`Lead.assignedAt`) and the rep's FIRST outbound contact attempt for that
+ * lead (earliest `Call.createdAt` where representative = rep AND lead = lead).
+ *
+ * We compute three numbers managers actually use:
+ *   • avgSeconds  — arithmetic mean across leads-with-contact
+ *   • medianSeconds — typical experience, robust to one-off slow leads
+ *   • p90Seconds  — the slowest 10%, useful for SLA alerting
+ *   • contactedCount / assignedCount — context for the ratio (so "1 hour TAT"
+ *     across 2 leads is read very differently to 1 hour across 200)
+ *
+ * Lower is better. A null `medianSeconds` means this rep has no leads with
+ * both an assignedAt and a subsequent call yet.
+ */
+const computeTurnaroundForRep = async (
+  repId: mongoose.Types.ObjectId
+): Promise<{
+  avgSeconds: number | null
+  medianSeconds: number | null
+  p90Seconds: number | null
+  contactedCount: number
+  assignedCount: number
+}> => {
+  // Pull (assignedAt, firstCallAt) per lead in a single aggregation. The
+  // $lookup is cheap because we already index on `lead` + `representative`.
+  const rows = await Lead.aggregate([
+    { $match: { owner: repId, assignedAt: { $ne: null } } },
+    {
+      $lookup: {
+        from: 'calls',
+        let: { leadId: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $and: [
+            { $eq: ['$lead', '$$leadId'] },
+            { $eq: ['$representative', repId] },
+          ] } } },
+          { $sort: { createdAt: 1 } },
+          { $limit: 1 },
+          { $project: { createdAt: 1 } },
+        ],
+        as: 'firstCall',
+      },
+    },
+    {
+      $project: {
+        assignedAt: 1,
+        firstCallAt: { $arrayElemAt: ['$firstCall.createdAt', 0] },
+      },
+    },
+  ])
+
+  const assignedCount = rows.length
+  const tats: number[] = []
+  for (const r of rows) {
+    if (!r.firstCallAt || !r.assignedAt) continue
+    const ms = new Date(r.firstCallAt).getTime() - new Date(r.assignedAt).getTime()
+    // Drop negatives — happens when a call predates assignment (legacy data).
+    if (ms > 0) tats.push(Math.round(ms / 1000))
+  }
+
+  if (tats.length === 0) {
+    return { avgSeconds: null, medianSeconds: null, p90Seconds: null, contactedCount: 0, assignedCount }
+  }
+
+  tats.sort((a, b) => a - b)
+  const sum = tats.reduce((s, v) => s + v, 0)
+  const avg = Math.round(sum / tats.length)
+  const mid = Math.floor(tats.length / 2)
+  const median = tats.length % 2 === 0
+    ? Math.round((tats[mid - 1] + tats[mid]) / 2)
+    : tats[mid]
+  const p90Idx = Math.min(tats.length - 1, Math.floor(tats.length * 0.9))
+  return {
+    avgSeconds: avg,
+    medianSeconds: median,
+    p90Seconds: tats[p90Idx],
+    contactedCount: tats.length,
+    assignedCount,
+  }
 }
 
 // Get summary metrics for all representatives
@@ -64,7 +148,8 @@ export const getRepresentativesPerformance = async (req: Request, res: Response,
           callsMonth,
           connectedCalls,
           missedCalls,
-          avgCallDuration
+          avgCallDuration,
+          turnaround,
         ] = await Promise.all([
           Call.countDocuments({ representative: repId }),
           Call.countDocuments({ representative: repId, createdAt: { $gte: today } }),
@@ -75,7 +160,8 @@ export const getRepresentativesPerformance = async (req: Request, res: Response,
           Call.aggregate([
             { $match: { representative: repId, duration: { $gt: 0 } } },
             { $group: { _id: null, avgDuration: { $avg: '$duration' } } }
-          ])
+          ]),
+          computeTurnaroundForRep(repId),
         ])
         
         // Calculate conversion rate
@@ -123,6 +209,10 @@ export const getRepresentativesPerformance = async (req: Request, res: Response,
             avgDuration: avgCallDuration[0]?.avgDuration ? Math.round(avgCallDuration[0].avgDuration) : 0,
             connectionRate
           },
+
+          // Turnaround time — how long after a lead is assigned to this rep
+          // do they make their first contact attempt. Lower is better.
+          turnaround,
           
           // Activity score (0-100)
           activityScore: Math.min(100, Math.round(
@@ -271,6 +361,9 @@ export const getRepresentativeDetailPerformance = async (req: Request, res: Resp
       { $group: { _id: '$outcome', count: { $sum: 1 } } },
       { $sort: { count: -1 } }
     ])
+
+    // Turnaround-time stats for this rep (same definition as the list view).
+    const turnaround = await computeTurnaroundForRep(repId)
     
     return res.status(200).json({
       success: true,
@@ -318,7 +411,9 @@ export const getRepresentativeDetailPerformance = async (req: Request, res: Resp
           status: r.status,
           leadName: r.leadName,
           leadId: r.lead
-        }))
+        })),
+
+        turnaround,
       }
     })
   } catch (err) {
