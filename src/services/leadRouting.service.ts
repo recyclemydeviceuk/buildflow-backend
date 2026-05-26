@@ -2,8 +2,8 @@ import mongoose from 'mongoose'
 import { Lead } from '../models/Lead'
 import { User } from '../models/User'
 import { Settings } from '../models/Settings'
-import { emitToTeam } from '../config/socket'
 import { logger } from '../utils/logger'
+import { notifyLeadAssigned } from './socket.service'
 
 /**
  * Auto-assign an UNOWNED lead based on the current routing configuration.
@@ -192,12 +192,14 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
       User.findByIdAndUpdate(chosenRep._id, { $set: { lastAssignedLeadAt: now } }),
     ])
 
-    // Notify the frontend so the sticky popup appears for the chosen rep
-    emitToTeam('all', 'lead:assigned', {
-      leadId: String(lead._id),
+    // Unified fan-out (team broadcast + per-user nudge). Same helper every
+    // assignment path uses, so the receiving rep's LeadList re-fetches
+    // instantly and the assignment popup pops in Layout.
+    notifyLeadAssigned(String(lead._id), String(chosenRep._id), chosenRep.name, {
       leadName: lead.name,
-      assignedTo: String(chosenRep._id),
-      assignedToName: chosenRep.name,
+      phone: lead.phone,
+      city: lead.city,
+      source: lead.source,
     })
 
     return { id: String(chosenRep._id), name: chosenRep.name }
@@ -211,3 +213,34 @@ export const routeLead = async (leadId: string | mongoose.Types.ObjectId): Promi
 // BuildFlow's round-robin doesn't use the offer/accept queue system.
 export const getNextRep = async (): Promise<{ id: string; name: string } | null> => null
 export const autoRouteQueueItem = async (_queueItemId: string): Promise<boolean> => false
+
+/**
+ * Single source of truth for "can this rep be given a new lead right now?".
+ *
+ * A rep is eligible iff:
+ *   • the account exists, role = representative
+ *   • `isActive: true` (account not deactivated by a manager)
+ *   • `canReceiveLeads !== false` (lead-receiving switch is on)
+ *
+ * Used by EVERY assignment entry-point (manual assign, bulk assign, queue
+ * assign, queue-offer accept, import resolution). Centralising the check
+ * means the rule "no leads to off accounts" can never be silently broken
+ * by a new code path that forgets one of the two flags.
+ */
+export const findEligibleRep = async (
+  userId: string | mongoose.Types.ObjectId
+): Promise<{ _id: mongoose.Types.ObjectId; name: string; email: string; notificationPrefs?: any } | null> => {
+  if (!mongoose.Types.ObjectId.isValid(String(userId))) return null
+  const rep = await User.findOne({
+    _id: userId,
+    role: 'representative',
+    isActive: true,
+    canReceiveLeads: { $ne: false },
+  }).select('_id name email notificationPrefs').lean()
+  return rep as any
+}
+
+/** Boolean variant for paths that already have the user — saves a roundtrip. */
+export const isRepEligible = async (
+  userId: string | mongoose.Types.ObjectId
+): Promise<boolean> => Boolean(await findEligibleRep(userId))

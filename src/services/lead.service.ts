@@ -4,7 +4,8 @@ import { QueueItem } from '../models/QueueItem'
 import { logAction } from './auditLog.service'
 import { parsePagination } from '../utils/paginate'
 import { LeadFilters } from '../types/lead.types'
-import { emitToTeam } from '../config/socket'
+import { findEligibleRep } from './leadRouting.service'
+import { notifyLeadAssigned } from './socket.service'
 
 export const getLeadsWithFilters = async (filters: LeadFilters) => {
   const { page, limit, skip } = parsePagination(filters.page, filters.limit)
@@ -34,15 +35,25 @@ export const getLeadsWithFilters = async (filters: LeadFilters) => {
 export const assignLeadToUser = async (
   leadId: string,
   userId: string,
-  userName: string,
+  _userName: string, // kept for back-compat, but we re-resolve from DB for safety
   actorId: string,
   actorName: string,
   actorRole: string
 ) => {
+  // Refuse to assign to an ineligible rep — same single rule every other
+  // assignment path enforces (isActive && canReceiveLeads !== false).
+  const rep = await findEligibleRep(userId)
+  if (!rep) return null
+
   const before = await Lead.findById(leadId).lean()
   const lead = await Lead.findByIdAndUpdate(
     leadId,
-    { owner: userId, ownerName: userName },
+    {
+      owner: rep._id,
+      ownerName: rep.name,
+      assignedAt: new Date(),
+      assignmentAcknowledged: false,
+    },
     { new: true }
   )
   if (!lead) return null
@@ -53,10 +64,15 @@ export const assignLeadToUser = async (
     entity: 'Lead',
     entityId: leadId,
     before: before as Record<string, unknown>,
-    after: { owner: userId, ownerName: userName },
+    after: { owner: String(rep._id), ownerName: rep.name },
   })
 
-  emitToTeam('all', 'lead:assigned', { leadId, assignedTo: userId, assignedToName: userName })
+  notifyLeadAssigned(leadId, String(rep._id), rep.name, {
+    leadName: lead.name,
+    phone: lead.phone,
+    city: lead.city,
+    source: lead.source,
+  })
   return lead
 }
 

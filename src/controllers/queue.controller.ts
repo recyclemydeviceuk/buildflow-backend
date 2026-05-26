@@ -1,7 +1,10 @@
 import { Request, Response, NextFunction } from 'express'
 import { QueueItem } from '../models/QueueItem'
 import { Lead } from '../models/Lead'
+import { User } from '../models/User'
 import { AuditLog } from '../models/AuditLog'
+import { findEligibleRep } from '../services/leadRouting.service'
+import { notifyLeadAssigned } from '../services/socket.service'
 
 export const getQueue = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -44,24 +47,51 @@ export const getLiveQueue = async (req: Request, res: Response, next: NextFuncti
 
 export const assignQueueItem = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { assignedTo, assignedName } = req.body
+    // The validator on this route accepts `userId` (the new name) but the
+    // legacy frontend still sometimes sends `assignedTo` — accept both.
+    const assignedTo = req.body.userId || req.body.assignedTo
+    if (!assignedTo) {
+      return res.status(400).json({ success: false, message: 'userId is required' })
+    }
 
     const item = await QueueItem.findById(req.params.id)
     if (!item) {
       return res.status(404).json({ success: false, message: 'Queue item not found' })
     }
 
-    item.assignedTo = assignedTo
-    item.assignedToName = assignedName
+    // Eligibility check — same rule the other assignment paths enforce. The
+    // old implementation blindly trusted the body, which meant the queue UI
+    // could route a lead to a rep whose account was deactivated or whose
+    // lead-receiving switch had been turned off. (Issue: "leads are getting
+    // assigned automatically even after the rep account is turned off".)
+    const rep = await findEligibleRep(assignedTo)
+    if (!rep) {
+      const exists = await User.exists({ _id: assignedTo, role: 'representative' })
+      return res.status(exists ? 409 : 404).json({
+        success: false,
+        message: exists
+          ? 'That representative is not currently accepting new leads (account inactive or lead-receiving switch is off).'
+          : 'Representative not found',
+      })
+    }
+
+    item.assignedTo = rep._id as any
+    item.assignedToName = rep.name
     item.status = 'assigned'
     item.assignedAt = new Date()
     item.segment = 'Unassigned'
     await item.save()
 
-    await Lead.findByIdAndUpdate(item.leadId, {
-      owner: assignedTo,
-      assignedAt: new Date(),
-    })
+    const lead = await Lead.findByIdAndUpdate(
+      item.leadId,
+      {
+        owner: rep._id,
+        ownerName: rep.name,
+        assignedAt: new Date(),
+        assignmentAcknowledged: false,
+      },
+      { new: true }
+    )
 
     await AuditLog.create({
       actor: req.user!.id,
@@ -72,6 +102,17 @@ export const assignQueueItem = async (req: Request, res: Response, next: NextFun
       entityId: String(item._id),
       after: item.toObject(),
     })
+
+    // Same socket fan-out as direct assignment so the receiving rep's lists
+    // refresh in real-time and the popup fires.
+    if (lead) {
+      notifyLeadAssigned(String(lead._id), String(rep._id), rep.name, {
+        leadName: lead.name,
+        phone: lead.phone,
+        city: lead.city,
+        source: lead.source,
+      })
+    }
 
     return res.status(200).json({ success: true, data: item })
   } catch (err) {

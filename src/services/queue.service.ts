@@ -5,8 +5,19 @@ import { Settings } from '../models/Settings'
 import { emitToTeam, emitToUser } from '../config/socket'
 import { addOfferTimeout } from '../utils/dateHelpers'
 import { logger } from '../utils/logger'
+import { findEligibleRep, isRepEligible } from './leadRouting.service'
+import { notifyLeadAssigned } from './socket.service'
 
 export const offerLeadToRep = async (queueItemId: string, repId: string, repName: string) => {
+  // Don't offer a queue item to a rep whose account is off or whose
+  // lead-receiving switch is off — same rule routeLead enforces.
+  if (!(await isRepEligible(repId))) {
+    logger.warn('Queue offer skipped — rep not eligible (inactive or canReceiveLeads=false)', {
+      queueItemId, repId,
+    })
+    return null
+  }
+
   const settings = await Settings.findOne()
   const timeoutSec = settings?.leadRouting?.offerTimeout || 60
 
@@ -49,15 +60,39 @@ export const acceptLeadOffer = async (queueItemId: string, repId: string, repNam
     return null
   }
 
+  // Re-check eligibility at accept time — between offer and accept the
+  // manager may have flipped the rep off.
+  const rep = await findEligibleRep(repId)
+  if (!rep) {
+    logger.warn('Queue accept rejected — rep no longer eligible at accept time', {
+      queueItemId, repId,
+    })
+    return null
+  }
+
   item.status = 'assigned'
-  item.assignedTo = new mongoose.Types.ObjectId(repId) as unknown as mongoose.Types.ObjectId
-  item.assignedToName = repName
+  item.assignedTo = rep._id as any
+  item.assignedToName = rep.name
   item.assignedAt = new Date()
   await item.save()
 
-  await Lead.findByIdAndUpdate(item.leadId, { owner: repId, ownerName: repName })
+  const lead = await Lead.findByIdAndUpdate(
+    item.leadId,
+    { owner: rep._id, ownerName: rep.name, assignedAt: new Date(), assignmentAcknowledged: false },
+    { new: true }
+  )
 
-  emitToTeam('all', 'queue:lead_assigned', { queueItemId, repId, repName })
+  emitToTeam('all', 'queue:lead_assigned', { queueItemId, repId: String(rep._id), repName: rep.name })
+  // Also fire the standard lead-assignment fan-out so the rep's LeadList and
+  // popup behave identically to a manual/manager assignment.
+  if (lead) {
+    notifyLeadAssigned(String(lead._id), String(rep._id), rep.name, {
+      leadName: lead.name,
+      phone: lead.phone,
+      city: lead.city,
+      source: lead.source,
+    })
+  }
   return item
 }
 
