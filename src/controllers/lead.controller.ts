@@ -53,6 +53,8 @@ const FIELD_ALIASES: Record<LeadFieldKey | ImportExtraField, string[]> = {
   budget: ['budget', 'price', 'investment', 'budget range'],
   buildType: ['buildtype', 'build type', 'property type', 'construction type'],
   plotOwned: ['plotowned', 'plot owned', 'ownership', 'plot ownership', 'owns plot'],
+  plotLocation: ['plotlocation', 'plot location', 'site location', 'property location', 'plot address'],
+  structure: ['structure', 'floors', 'no of floors', 'number of floors', 'building structure'],
   campaign: ['campaign', 'campaign name', 'utm campaign', 'utm_campaign'],
   plotSize: ['plotsize', 'plot size', 'size', 'area'],
   plotSizeUnit: ['plotsizeunit', 'plot size unit', 'size unit', 'area unit', 'unit'],

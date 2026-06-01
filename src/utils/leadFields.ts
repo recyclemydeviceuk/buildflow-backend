@@ -6,6 +6,8 @@ export type LeadFieldKey =
   | 'budget'
   | 'buildType'
   | 'plotOwned'
+  | 'plotLocation'
+  | 'structure'
   | 'campaign'
   | 'plotSize'
   | 'plotSizeUnit'
@@ -24,6 +26,7 @@ export interface LeadFieldDefinition {
 
 const DEFAULT_BUILD_TYPES = ['Residential', 'Commercial', 'Villas', 'Apartment', 'Plot']
 const DEFAULT_PLOT_UNITS = ['sq ft', 'sq yards', 'acres', 'guntha']
+const DEFAULT_STRUCTURE_OPTIONS = ['G+0', 'G+1', 'G+2', 'G+3', 'G+4', 'G+5']
 
 export const DEFAULT_LEAD_FIELD_DEFINITIONS: LeadFieldDefinition[] = [
   {
@@ -88,9 +91,9 @@ export const DEFAULT_LEAD_FIELD_DEFINITIONS: LeadFieldDefinition[] = [
     order: 5,
   },
   {
-    key: 'campaign',
-    label: 'Campaign',
-    placeholder: 'Campaign',
+    key: 'plotLocation',
+    label: 'Plot Location',
+    placeholder: 'Enter plot location',
     type: 'text',
     section: 'qualification',
     required: false,
@@ -127,6 +130,27 @@ export const DEFAULT_LEAD_FIELD_DEFINITIONS: LeadFieldDefinition[] = [
     required: false,
     active: true,
     order: 9,
+  },
+  {
+    key: 'structure',
+    label: 'Structure',
+    placeholder: 'Select structure',
+    type: 'select',
+    section: 'qualification',
+    options: DEFAULT_STRUCTURE_OPTIONS,
+    required: false,
+    active: true,
+    order: 10,
+  },
+  {
+    key: 'campaign',
+    label: 'Campaign',
+    placeholder: 'Campaign',
+    type: 'text',
+    section: 'qualification',
+    required: false,
+    active: false,
+    order: 11,
   },
 ]
 

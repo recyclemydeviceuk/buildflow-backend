@@ -39,6 +39,8 @@ export interface ILead extends Document {
   plotSizeUnit?: string | null
   plotOwned?: boolean | null
   buildType?: string | null
+  plotLocation?: string | null
+  structure?: string | null
   campaign?: string | null
   campaignId?: string | null
   externalId?: string | null
@@ -119,6 +121,8 @@ const LeadSchema = new Schema<ILead>(
     plotSizeUnit: { type: String, default: null },
     plotOwned: { type: Boolean, default: null },
     buildType: { type: String, default: null },
+    plotLocation: { type: String, default: null },
+    structure: { type: String, default: null },
     campaign: { type: String, default: null },
     campaignId: { type: String, default: null },
     externalId: { type: String, default: null },
