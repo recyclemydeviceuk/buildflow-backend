@@ -536,7 +536,7 @@ const tools: Record<string, Tool> = {
           disposition: {
             type: 'string',
             description:
-              'One of: New, Contacted/Open, Qualified, Visit Done, Meeting Done, Negotiation Done, Booking Done, Agreement Done, Failed.',
+              'One of: New, Contacted/Open, Qualified, Visit Done, Meeting Done, Negotiation Done, Booking Done, Agreement Done, Prospect, Failed.',
           },
           note: { type: 'string', description: 'Why is the disposition changing? (1–2 sentences)' },
         },
