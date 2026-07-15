@@ -68,6 +68,11 @@ export const IMPORT_ALLOWED_MIME_TYPES = [
 export const S3_AVATARS_PREFIX = 'avatars/'
 export const S3_IMPORTS_PREFIX = 'imports/'
 export const S3_RECORDINGS_PREFIX = 'recordings/'
+export const S3_MEDIA_PREFIX = 'media/'
+
+// Media library accepts any file type. Cap the size so a single upload can't
+// exhaust the request body / memory buffer (multer uses memoryStorage).
+export const MEDIA_MAX_FILE_SIZE_MB = 100
 
 export const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000
 export const RATE_LIMIT_MAX_REQUESTS = 200

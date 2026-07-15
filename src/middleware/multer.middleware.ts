@@ -1,5 +1,5 @@
 import multer from 'multer'
-import { IMPORT_ALLOWED_MIME_TYPES, IMPORT_MAX_FILE_SIZE_MB } from '../config/constants'
+import { IMPORT_ALLOWED_MIME_TYPES, IMPORT_MAX_FILE_SIZE_MB, MEDIA_MAX_FILE_SIZE_MB } from '../config/constants'
 
 const storage = multer.memoryStorage()
 
@@ -25,4 +25,12 @@ export const uploadImport = multer({
       cb(new Error('Only CSV and Excel files are allowed'))
     }
   },
+}).single('file')
+
+// Media library: accept ANY file type. Only the size is bounded — the whole
+// point of the library is to store arbitrary files (images, video, PDFs,
+// spreadsheets, archives, ...), so there is deliberately no MIME filter here.
+export const uploadMedia = multer({
+  storage,
+  limits: { fileSize: MEDIA_MAX_FILE_SIZE_MB * 1024 * 1024 },
 }).single('file')

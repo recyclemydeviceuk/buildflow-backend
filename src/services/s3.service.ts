@@ -65,6 +65,29 @@ export const getPresignedUrl = async (key: string, expiresIn = 3600): Promise<st
   }
 }
 
+// Presigned GET URL that forces a download with the original file name, rather
+// than rendering inline. Used by the media library's Download action so the
+// browser saves "quarterly-report.pdf" instead of the opaque S3 object key.
+export const getPresignedDownloadUrl = async (
+  key: string,
+  fileName: string,
+  expiresIn = 3600
+): Promise<string | null> => {
+  try {
+    // Strip characters that would break the HTTP header; keep it readable.
+    const safeName = (fileName || 'download').replace(/["\\\r\n]/g, '_')
+    const command = new GetObjectCommand({
+      Bucket: S3_BUCKET_NAME,
+      Key: key,
+      ResponseContentDisposition: `attachment; filename="${safeName}"`,
+    })
+    return await getSignedUrl(s3Client, command, { expiresIn })
+  } catch (err) {
+    logger.error('S3 getPresignedDownloadUrl error', err)
+    return null
+  }
+}
+
 export const getS3KeyFromUrl = (url: string): string | null => {
   if (!url) return null
 
