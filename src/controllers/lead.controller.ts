@@ -2583,12 +2583,20 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
       return res.status(403).json({ success: false, message: 'Only managers can export leads' })
     }
 
-    const { dateRange, fields, format = 'csv', owner, priorMilestoneOnly } = req.body
+    const { dateRange, fields, format = 'csv', owner, priorMilestoneOnly, dateFrom: dateFromInput, dateTo: dateToInput, plotFilter } = req.body
 
     // Validate date range
-    const validDateRanges = ['today', 'week', 'month', 'lifetime']
+    const validDateRanges = ['today', 'week', 'month', 'lifetime', 'custom']
     if (!dateRange || !validDateRanges.includes(dateRange)) {
-      return res.status(400).json({ success: false, message: 'Valid dateRange is required (today, week, month, lifetime)' })
+      return res.status(400).json({ success: false, message: 'Valid dateRange is required (today, week, month, lifetime, custom)' })
+    }
+
+    // Validate plot ownership filter. Maps directly to lead.plotOwned:
+    // 'looking' = doesn't own a plot yet (plotOwned === false),
+    // 'owned' = already owns a plot (plotOwned === true).
+    const validPlotFilters = ['all', 'looking', 'owned']
+    if (plotFilter !== undefined && plotFilter !== null && !validPlotFilters.includes(plotFilter)) {
+      return res.status(400).json({ success: false, message: 'Valid plotFilter is required (all, looking, owned)' })
     }
 
     // Validate fields. The "Prior milestone failed leads" preset (toggle on
@@ -2623,7 +2631,8 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
     // Build date filter
     const now = new Date()
     let dateFrom: Date | null = null
-    
+    let dateTo: Date | null = null
+
     if (dateRange === 'today') {
       dateFrom = new Date(now.getFullYear(), now.getMonth(), now.getDate())
     } else if (dateRange === 'week') {
@@ -2634,6 +2643,33 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
       dateFrom.setHours(0, 0, 0, 0)
     } else if (dateRange === 'month') {
       dateFrom = new Date(now.getFullYear(), now.getMonth(), 1)
+    } else if (dateRange === 'custom') {
+      // Custom range: user picks an explicit From and/or To date. Either
+      // bound is optional — a From with no To exports everything since From,
+      // a To with no From exports everything up to To.
+      if (dateFromInput) {
+        const parsedFrom = new Date(dateFromInput)
+        if (isNaN(parsedFrom.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid "from" date' })
+        }
+        parsedFrom.setHours(0, 0, 0, 0)
+        dateFrom = parsedFrom
+      }
+      if (dateToInput) {
+        const parsedTo = new Date(dateToInput)
+        if (isNaN(parsedTo.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid "to" date' })
+        }
+        // Include the entire "to" day, up to 23:59:59.999.
+        parsedTo.setHours(23, 59, 59, 999)
+        dateTo = parsedTo
+      }
+      if (!dateFrom && !dateTo) {
+        return res.status(400).json({ success: false, message: 'Custom range requires at least a "from" or "to" date' })
+      }
+      if (dateFrom && dateTo && dateFrom > dateTo) {
+        return res.status(400).json({ success: false, message: '"from" date must be on or before "to" date' })
+      }
     }
     // lifetime: no date filter
 
@@ -2650,8 +2686,17 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
     }
 
     // Apply date filter
-    if (dateFrom) {
-      query.createdAt = { $gte: dateFrom }
+    if (dateFrom || dateTo) {
+      query.createdAt = {}
+      if (dateFrom) query.createdAt.$gte = dateFrom
+      if (dateTo) query.createdAt.$lte = dateTo
+    }
+
+    // Apply plot ownership filter.
+    if (plotFilter === 'looking') {
+      query.plotOwned = false
+    } else if (plotFilter === 'owned') {
+      query.plotOwned = true
     }
 
     // Prior-milestone filter — narrows to Failed leads whose status history
