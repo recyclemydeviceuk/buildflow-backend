@@ -16,8 +16,9 @@ import {
 const PREVIEW_URL_TTL_SECONDS = 60 * 60 // 1 hour
 
 // Map a MIME type to the coarse `kind` bucket the UI uses to choose an icon
-// and preview renderer.
-const resolveMediaKind = (mimeType: string): MediaKind => {
+// and preview renderer. Exported so the lead-file controller reuses the exact
+// same classification.
+export const resolveMediaKind = (mimeType: string): MediaKind => {
   const type = (mimeType || '').toLowerCase()
   if (type.startsWith('image/')) return 'image'
   if (type.startsWith('video/')) return 'video'
@@ -53,7 +54,9 @@ const resolveMediaKind = (mimeType: string): MediaKind => {
 
 // Shape a MediaFile document for the API, attaching a short-lived presigned
 // preview URL so the client can render/stream the file directly from storage.
-const serializeMediaFile = async (doc: any) => {
+// Exported so the lead-file controller returns identically-shaped payloads
+// (the frontend reuses the same MediaFile type / preview modal).
+export const serializeMediaFile = async (doc: any) => {
   const previewUrl = await getPresignedUrl(doc.s3Key, PREVIEW_URL_TTL_SECONDS)
   return {
     id: String(doc._id),
@@ -64,6 +67,7 @@ const serializeMediaFile = async (doc: any) => {
     description: doc.description ?? null,
     uploadedBy: String(doc.uploadedBy),
     uploadedByName: doc.uploadedByName,
+    lead: doc.lead ? String(doc.lead) : null,
     previewUrl,
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
@@ -116,7 +120,9 @@ export const getMediaFiles = async (req: Request, res: Response, next: NextFunct
 
     // The library is a shared workspace — every authenticated user sees every
     // file. (Deletion is still restricted to the uploader or a manager.)
-    const query: any = {}
+    // Files attached to a specific lead live on that lead's page, not here, so
+    // they're excluded from the shared library.
+    const query: any = { lead: null }
 
     if (search) {
       // Escape regex metacharacters so a search like "report (1)" is literal.

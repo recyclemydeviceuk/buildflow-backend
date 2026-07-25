@@ -69,6 +69,10 @@ export const S3_AVATARS_PREFIX = 'avatars/'
 export const S3_IMPORTS_PREFIX = 'imports/'
 export const S3_RECORDINGS_PREFIX = 'recordings/'
 export const S3_MEDIA_PREFIX = 'media/'
+// Files attached to an individual lead/client (documents, plans, agreements,
+// site photos, ...). Stored under a per-lead folder so a lead's attachments are
+// grouped together in the bucket and separate from the shared media library.
+export const S3_LEAD_FILES_PREFIX = 'lead-files/'
 
 // Media library accepts any file type. Cap the size so a single upload can't
 // exhaust the request body / memory buffer (multer uses memoryStorage).

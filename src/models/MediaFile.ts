@@ -24,6 +24,11 @@ export interface IMediaFile extends Document {
   kind: MediaKind
   fileSize: number
   description?: string | null
+  // When set, this file belongs to a specific lead/client (attached from the
+  // lead detail page) rather than the shared media library. `null` = a
+  // library file visible to everyone. Lead-scoped files are excluded from the
+  // library listing and only shown on that lead's page.
+  lead?: mongoose.Types.ObjectId | null
   createdAt: Date
   updatedAt: Date
 }
@@ -52,6 +57,7 @@ const MediaFileSchema = new Schema<IMediaFile>(
     kind: { type: String, enum: MEDIA_KINDS, default: 'other' },
     fileSize: { type: Number, required: true },
     description: { type: String, default: null, trim: true },
+    lead: { type: Schema.Types.ObjectId, ref: 'Lead', default: null },
   },
   { timestamps: true }
 )
@@ -59,6 +65,8 @@ const MediaFileSchema = new Schema<IMediaFile>(
 MediaFileSchema.index({ uploadedBy: 1 })
 MediaFileSchema.index({ kind: 1 })
 MediaFileSchema.index({ createdAt: -1 })
+// Fast lookup of a single lead's attachments, newest first.
+MediaFileSchema.index({ lead: 1, createdAt: -1 })
 // Case-insensitive name search support.
 MediaFileSchema.index({ fileName: 'text' })
 

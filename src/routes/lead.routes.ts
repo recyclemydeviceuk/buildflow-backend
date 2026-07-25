@@ -1,4 +1,5 @@
-import { Router } from 'express'
+import { Router, Request, Response, NextFunction } from 'express'
+import multer from 'multer'
 import { body, param, query } from 'express-validator'
 import {
   getLeads,
@@ -26,15 +27,41 @@ import {
   getPendingAssignments,
   respondToAssignment,
 } from '../controllers/lead.controller'
+import {
+  getLeadFiles,
+  uploadLeadFile,
+  getLeadFileDownloadUrl,
+  deleteLeadFile,
+} from '../controllers/leadFile.controller'
 import { authenticate } from '../middleware/auth.middleware'
 import { requireManager, requireRole } from '../middleware/role.middleware'
-import { uploadImport } from '../middleware/multer.middleware'
+import { uploadImport, uploadMedia } from '../middleware/multer.middleware'
 import { validate } from '../middleware/validate.middleware'
 import { requireFeature, requireDeletePermission } from '../middleware/featureControl.middleware'
+import { MEDIA_MAX_FILE_SIZE_MB } from '../config/constants'
 
 const router = Router()
 
 router.use(authenticate)
+
+// Parse a single lead-attachment upload, translating multer's errors (chiefly
+// file-too-large) into friendly 400s. Mirrors the media library's handler.
+const parseLeadFileUpload = (req: Request, res: Response, next: NextFunction) => {
+  uploadMedia(req, res, (err: unknown) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res
+          .status(400)
+          .json({ success: false, message: `File is too large. Maximum size is ${MEDIA_MAX_FILE_SIZE_MB} MB.` })
+      }
+      return res.status(400).json({ success: false, message: err.message })
+    }
+    if (err) {
+      return res.status(400).json({ success: false, message: (err as Error).message || 'Upload failed' })
+    }
+    return next()
+  })
+}
 
 router.post('/import/preview', requireRole('manager', 'representative'), uploadImport, previewLeadImport)
 router.post('/import', requireRole('manager', 'representative'), uploadImport, importLeadsFromFile)
@@ -122,5 +149,13 @@ router.get('/:id/follow-ups', [param('id').isMongoId()], validate, getLeadFollow
 router.post('/:id/follow-ups', [param('id').isMongoId(), body('scheduledAt').notEmpty()], validate, createFollowUp)
 router.patch('/:id/follow-ups/:followUpId', [param('id').isMongoId(), param('followUpId').isMongoId()], validate, updateFollowUp)
 router.delete('/:id/follow-ups/:followUpId', [param('id').isMongoId(), param('followUpId').isMongoId()], validate, deleteFollowUp)
+
+// Per-lead file attachments (documents, plans, agreements, site photos, ...).
+// Every lead — in any status — gets its own file store, separate from the
+// shared media library.
+router.get('/:id/files', [param('id').isMongoId()], validate, getLeadFiles)
+router.post('/:id/files', [param('id').isMongoId()], validate, parseLeadFileUpload, uploadLeadFile)
+router.get('/:id/files/:fileId/download', [param('id').isMongoId(), param('fileId').isMongoId()], validate, getLeadFileDownloadUrl)
+router.delete('/:id/files/:fileId', [param('id').isMongoId(), param('fileId').isMongoId()], validate, deleteLeadFile)
 
 export default router
