@@ -29,6 +29,7 @@ export const LEAD_SOURCES = ['Direct', 'Manual', 'Meta', 'Website', 'Google ADS'
 export const DISPOSITIONS = [
   'New',
   'Contacted/Open',
+  'Interested',
   'Qualified',
   'Visit Done',
   'Meeting Done',

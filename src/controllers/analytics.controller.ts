@@ -585,7 +585,7 @@ export const getManagerDashboard = async (req: Request, res: Response, next: Nex
     })
 
     // Build funnel
-    const funnelOrder = ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done']
+    const funnelOrder = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done']
     const funnelMap = new Map(pipelineFunnel.map((d: any) => [d._id, d.count]))
     const funnel = funnelOrder.map((stage) => ({ stage, count: (funnelMap.get(stage) || 0) as number }))
 
@@ -813,7 +813,7 @@ export const getConversionFunnel = async (req: Request, res: Response, next: Nex
       }
     }
 
-    const stages = ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed']
+    const stages = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed']
 
     const result = await Lead.aggregate([
       { $match: matchStage },

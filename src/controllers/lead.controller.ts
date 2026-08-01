@@ -22,7 +22,7 @@ import { normalizeLeadFields, type LeadFieldDefinition, type LeadFieldKey } from
 import { parseImportFile } from '../utils/csvParser'
 import { isValid, parse as parseDate, parseISO } from 'date-fns'
 
-const DISPOSITIONS = ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed']
+const DISPOSITIONS = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed']
 const FAILED_REASONS = ['Budget Issue', 'Not Interested', 'Location Issue', 'Timeline Issue', 'Competition', 'Not Responding', 'Not Enquired', 'Invalid Number', 'Other']
 const MEETING_TYPES = ['VC', 'Client Place']
 type BulkLeadUpdatePayload = {
@@ -296,6 +296,7 @@ const resolveDisposition = (value?: string | null): string => {
     contactedopen: 'Contacted/Open',
     followup: 'Contacted/Open',
     followupdone: 'Contacted/Open',
+    interested: 'Interested',
     visitdone: 'Visit Done',
     visited: 'Visit Done',
     sitevisit: 'Visit Done',

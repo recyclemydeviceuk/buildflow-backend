@@ -74,7 +74,7 @@ const LeadStatusNoteSchema = new Schema<ILeadStatusNote>(
   {
     status: {
       type: String,
-      enum: ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed'],
+      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed'],
       required: true,
     },
     note: { type: String, required: true, trim: true },
@@ -95,7 +95,7 @@ const LeadSchema = new Schema<ILead>(
     source: { type: String, required: true },
     disposition: {
       type: String,
-      enum: ['New', 'Contacted/Open', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed'],
+      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed'],
       default: 'New',
     },
     meetingType: { type: String, enum: ['VC', 'Client Place', null], default: null },
