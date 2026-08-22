@@ -18,9 +18,12 @@ router.use(authenticate, requireManager, requireFeature('auditLog'))
 
 router.get('/', getAuditLogs)
 router.get('/filters', getAuditLogFilters)
+router.get('/transfer-history', getLeadTransferHistory)
 router.get('/transfers', getLeadTransferHistory)
 
-router.get('/:id', [param('id').isMongoId()], validate, getAuditLogById)
+// Constrain the dynamic route at the router level so a named endpoint can
+// never be mistaken for an audit-log ID, regardless of future route ordering.
+router.get('/:id([0-9a-fA-F]{24})', [param('id').isMongoId()], validate, getAuditLogById)
 
 router.get('/:entity/:entityId', getAuditLogsByEntity)
 
