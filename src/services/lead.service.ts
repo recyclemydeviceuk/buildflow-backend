@@ -6,6 +6,7 @@ import { parsePagination } from '../utils/paginate'
 import { LeadFilters } from '../types/lead.types'
 import { findEligibleRep } from './leadRouting.service'
 import { notifyLeadAssigned } from './socket.service'
+import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
 
 export const getLeadsWithFilters = async (filters: LeadFilters) => {
   const { page, limit, skip } = parsePagination(filters.page, filters.limit)
@@ -58,13 +59,16 @@ export const assignLeadToUser = async (
   )
   if (!lead) return null
 
+  const after = lead.toObject() as unknown as Record<string, unknown>
+
   await logAction({
     actorId, actorName, actorRole,
-    action: 'LEAD_ASSIGNED',
+    action: getLeadOwnershipAction(before, after) || 'lead.assigned',
     entity: 'Lead',
     entityId: leadId,
     before: before as Record<string, unknown>,
-    after: { owner: String(rep._id), ownerName: rep.name },
+    after,
+    metadata: { transferSource: 'direct' },
   })
 
   notifyLeadAssigned(leadId, String(rep._id), rep.name, {

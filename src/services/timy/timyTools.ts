@@ -19,9 +19,11 @@ import { Lead } from '../../models/Lead'
 import { User } from '../../models/User'
 import { FollowUp } from '../../models/FollowUp'
 import { Call } from '../../models/Call'
+import { AuditLog } from '../../models/AuditLog'
 import { emitToTeam } from '../../config/socket'
 import { logger } from '../../utils/logger'
 import { DISPOSITIONS } from '../../config/constants'
+import { getLeadOwnershipAction } from '../../utils/leadTransferHistory'
 
 export interface TimyContext {
   userId: string
@@ -639,6 +641,7 @@ const tools: Record<string, Tool> = {
       const result = await loadMutableLead(String(args?.leadId || ''), ctx)
       if ('error' in result) return result
       const lead = result.lead
+      const beforeObject = lead.toObject()
 
       const targetId = String(args?.targetUserId || '').trim()
       if (!targetId) {
@@ -648,6 +651,18 @@ const tools: Record<string, Tool> = {
         lead.assignedAt = null
         lead.assignmentAcknowledged = false
         await lead.save()
+        const afterObject = lead.toObject()
+        await AuditLog.create({
+          actor: ctx.userId,
+          actorName: ctx.userName,
+          actorRole: ctx.userRole,
+          action: getLeadOwnershipAction(beforeObject, afterObject) || 'lead.unassigned',
+          entity: 'Lead',
+          entityId: String(lead._id),
+          before: beforeObject,
+          after: afterObject,
+          metadata: { transferSource: 'assistant' },
+        })
         emitToTeam('all', 'lead:unassigned', { leadId: String(lead._id) })
         return { success: true, leadId: String(lead._id), assignedTo: null }
       }
@@ -661,6 +676,18 @@ const tools: Record<string, Tool> = {
       lead.assignedAt = new Date()
       lead.assignmentAcknowledged = false
       await lead.save()
+      const afterObject = lead.toObject()
+      await AuditLog.create({
+        actor: ctx.userId,
+        actorName: ctx.userName,
+        actorRole: ctx.userRole,
+        action: getLeadOwnershipAction(beforeObject, afterObject) || 'lead.assigned',
+        entity: 'Lead',
+        entityId: String(lead._id),
+        before: beforeObject,
+        after: afterObject,
+        metadata: { transferSource: 'assistant' },
+      })
       // Mirror the existing controller's socket pattern so the rep's
       // "New Lead Assigned" popup fires.
       emitToTeam('all', 'lead:assigned', {

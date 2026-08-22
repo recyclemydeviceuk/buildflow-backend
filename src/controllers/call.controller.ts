@@ -6,6 +6,7 @@ import { Lead } from '../models/Lead'
 import { Reminder } from '../models/Reminder'
 import { Settings } from '../models/Settings'
 import { User } from '../models/User'
+import { AuditLog } from '../models/AuditLog'
 import { exotelConfig } from '../config/exotel'
 import { emitUserAvailabilityUpdate, type UserAvailabilityPayload } from '../config/socket'
 import { DISPOSITIONS } from '../config/constants'
@@ -14,6 +15,7 @@ import { ExotelManagedCallError, getManagedCallDetails, initiateManagedCall } fr
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
 import { normalizeFeatureControls } from '../utils/featureControls'
+import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
 
 const normalizePhone = (value?: string | null): string => {
   if (!value) return ''
@@ -538,6 +540,8 @@ export const initiateCall = async (req: Request, res: Response, next: NextFuncti
     if (!lead.owner) {
       leadUpdate.owner = representative._id
       leadUpdate.ownerName = representative.name
+      leadUpdate.assignedAt = new Date()
+      leadUpdate.assignmentAcknowledged = false
       logger.info('Auto-assigning unassigned lead to representative on call initiation', {
         leadId: String(lead._id),
         representativeId: String(representative._id),
@@ -545,12 +549,28 @@ export const initiateCall = async (req: Request, res: Response, next: NextFuncti
       })
     }
 
-    await Promise.all([
-      Lead.findByIdAndUpdate(lead._id, leadUpdate),
+    const [updatedLead] = await Promise.all([
+      Lead.findByIdAndUpdate(lead._id, leadUpdate, { new: true }),
       User.findByIdAndUpdate(representative._id, {
         activeCallSid: callData.sid,
       }),
     ])
+
+    if (!lead.owner && updatedLead) {
+      const beforeObject = lead.toObject()
+      const afterObject = updatedLead.toObject()
+      await AuditLog.create({
+        actor: req.user!.id,
+        actorName: req.user!.name,
+        actorRole: req.user!.role,
+        action: getLeadOwnershipAction(beforeObject, afterObject) || 'lead.assigned',
+        entity: 'Lead',
+        entityId: String(lead._id),
+        before: beforeObject,
+        after: afterObject,
+        metadata: { transferSource: 'call' },
+      })
+    }
 
     emitRepresentativeAvailability({
       _id: representative._id,

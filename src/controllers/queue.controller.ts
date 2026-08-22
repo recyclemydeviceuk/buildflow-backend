@@ -3,6 +3,7 @@ import { QueueItem } from '../models/QueueItem'
 import { Lead } from '../models/Lead'
 import { User } from '../models/User'
 import { AuditLog } from '../models/AuditLog'
+import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
 import { findEligibleRep } from '../services/leadRouting.service'
 import { notifyLeadAssigned } from '../services/socket.service'
 
@@ -82,6 +83,7 @@ export const assignQueueItem = async (req: Request, res: Response, next: NextFun
     item.segment = 'Unassigned'
     await item.save()
 
+    const leadBefore = await Lead.findById(item.leadId)
     const lead = await Lead.findByIdAndUpdate(
       item.leadId,
       {
@@ -101,7 +103,24 @@ export const assignQueueItem = async (req: Request, res: Response, next: NextFun
       entity: 'QueueItem',
       entityId: String(item._id),
       after: item.toObject(),
+      metadata: { leadTransferRecorded: Boolean(lead) },
     })
+
+    if (lead) {
+      const beforeObject = leadBefore?.toObject() || {}
+      const afterObject = lead.toObject()
+      await AuditLog.create({
+        actor: req.user!.id,
+        actorName: req.user!.name,
+        actorRole: req.user!.role,
+        action: getLeadOwnershipAction(beforeObject, afterObject) || 'lead.assigned',
+        entity: 'Lead',
+        entityId: String(lead._id),
+        before: beforeObject,
+        after: afterObject,
+        metadata: { transferSource: 'queue' },
+      })
+    }
 
     // Same socket fan-out as direct assignment so the receiving rep's lists
     // refresh in real-time and the popup fires.

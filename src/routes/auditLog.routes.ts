@@ -5,6 +5,7 @@ import {
   getAuditLogFilters,
   getAuditLogById,
   getAuditLogsByEntity,
+  getLeadTransferHistory,
 } from '../controllers/auditLog.controller'
 import { authenticate } from '../middleware/auth.middleware'
 import { requireManager } from '../middleware/role.middleware'
@@ -17,6 +18,7 @@ router.use(authenticate, requireManager, requireFeature('auditLog'))
 
 router.get('/', getAuditLogs)
 router.get('/filters', getAuditLogFilters)
+router.get('/transfers', getLeadTransferHistory)
 
 router.get('/:id', [param('id').isMongoId()], validate, getAuditLogById)
 

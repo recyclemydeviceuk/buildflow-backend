@@ -18,8 +18,15 @@ import { routeLead, findEligibleRep } from '../services/leadRouting.service'
 import { notifyLeadAssigned } from '../services/socket.service'
 import { computeReminderStatus } from '../services/reminder.service'
 import { normalizeNotificationPrefs } from '../utils/notificationPrefs'
+import {
+  resolveExportFields,
+  buildLeadRow,
+  labelsFor,
+  toCsv,
+} from '../utils/leadExport'
 import { normalizeLeadFields, type LeadFieldDefinition, type LeadFieldKey } from '../utils/leadFields'
 import { parseImportFile } from '../utils/csvParser'
+import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
 import { isValid, parse as parseDate, parseISO } from 'date-fns'
 
 const DISPOSITIONS = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed']
@@ -879,16 +886,22 @@ export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFun
       if ($push) rawUpdate.$push = $push
       await Lead.collection.updateOne({ _id: lead._id }, rawUpdate)
       const after = await Lead.findById(lead._id)
+      const afterObject = after?.toObject()
+      const ownershipAction =
+        bulkPayload.owner !== undefined
+          ? getLeadOwnershipAction(before, afterObject)
+          : null
       updatedIds.push(String(lead._id))
       auditEntries.push({
         actor: req.user!.id,
         actorName: req.user!.name,
         actorRole: req.user!.role,
-        action: 'lead.bulk_updated',
+        action: ownershipAction || 'lead.bulk_updated',
         entity: 'Lead',
         entityId: String(lead._id),
         before,
-        after: after?.toObject(),
+        after: afterObject,
+        ...(ownershipAction && { metadata: { transferSource: 'bulk' } }),
       })
     }
 
@@ -1936,6 +1949,19 @@ export const updateLead = async (req: Request, res: Response, next: NextFunction
     const before = existing.toObject()
     const updates = { ...req.body }
 
+    // Ownership changes must go through the dedicated assign/transfer route.
+    // Besides enforcing representative eligibility, that route records the
+    // complete from/to history. Never allow the generic editor to bypass it.
+    for (const protectedField of [
+      'owner',
+      'ownerName',
+      'assignedAt',
+      'assignmentAcknowledged',
+      'isInQueue',
+    ]) {
+      delete (updates as Record<string, unknown>)[protectedField]
+    }
+
     if (req.body?.createdAt !== undefined) {
       try {
         updates.createdAt = parseRequestedCreatedAt(req.body.createdAt)
@@ -2163,15 +2189,20 @@ export const assignLead = async (req: Request, res: Response, next: NextFunction
 
     await QueueItem.deleteMany({ leadId: before._id })
 
+    const beforeObject = before.toObject()
+    const afterObject = lead!.toObject()
+    const ownershipAction = getLeadOwnershipAction(beforeObject, afterObject)
+
     await AuditLog.create({
       actor: req.user!.id,
       actorName: req.user!.name,
       actorRole: req.user!.role,
-      action: owner ? 'lead.assigned' : 'lead.unassigned',
+      action: ownershipAction || (owner ? 'lead.assigned' : 'lead.unassigned'),
       entity: 'Lead',
       entityId: req.params.id,
-      before: before.toObject(),
-      after: lead!.toObject(),
+      before: beforeObject,
+      after: afterObject,
+      metadata: { transferSource: 'direct' },
     })
 
     // Unified fan-out — team broadcast + per-user nudge. The per-user
@@ -2285,6 +2316,7 @@ export const respondToAssignment = async (req: Request, res: Response, next: Nex
       entityId: String(lead._id),
       before,
       after: { ...before, owner: null, ownerName: null, assignedAt: null, assignmentAcknowledged: true },
+      metadata: { transferSource: 'declined' },
     }).catch(() => null)
 
     emitToTeam('all', 'lead:assigned', {
@@ -2542,42 +2574,6 @@ export const deleteStatusNote = async (req: Request, res: Response, next: NextFu
   }
 }
 
-// Lead fields available for export
-const EXPORTABLE_FIELDS = [
-  { key: 'name', label: 'Name' },
-  { key: 'phone', label: 'Phone' },
-  { key: 'alternatePhone', label: 'Alternate Phone' },
-  { key: 'email', label: 'Email' },
-  { key: 'city', label: 'City' },
-  { key: 'source', label: 'Source' },
-  { key: 'disposition', label: 'Disposition' },
-  { key: 'ownerName', label: 'Owner' },
-  { key: 'budget', label: 'Budget' },
-  { key: 'plotSize', label: 'Plot Size' },
-  { key: 'plotSizeUnit', label: 'Plot Size Unit' },
-  { key: 'plotOwned', label: 'Plot Owned' },
-  { key: 'buildType', label: 'Build Type' },
-  { key: 'campaign', label: 'Campaign' },
-  { key: 'meetingType', label: 'Meeting Type' },
-  { key: 'meetingLocation', label: 'Meeting Location' },
-  { key: 'failedReason', label: 'Failed Reason' },
-  { key: 'notes', label: 'Notes' },
-  { key: 'lastActivity', label: 'Last Activity' },
-  { key: 'lastActivityNote', label: 'Last Activity Note' },
-  { key: 'nextFollowUp', label: 'Next Follow Up' },
-  { key: 'createdAt', label: 'Created At' },
-  { key: 'updatedAt', label: 'Updated At' },
-  // Computed columns derived from statusNotes — useful for re-targeting
-  // failed leads that previously reached a visit / meeting milestone.
-  { key: 'priorMilestones', label: 'Prior Milestones' },
-  { key: 'visitDoneNote', label: 'Visit Done Note' },
-  { key: 'visitDoneAt', label: 'Visit Done At' },
-  { key: 'meetingDoneNote', label: 'Meeting Done Note' },
-  { key: 'meetingDoneAt', label: 'Meeting Done At' },
-  { key: 'failedNote', label: 'Failed Note' },
-  { key: 'failedAt', label: 'Failed At' },
-]
-
 export const exportLeads = async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (req.user!.role !== 'manager') {
@@ -2600,35 +2596,16 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
       return res.status(400).json({ success: false, message: 'Valid plotFilter is required (all, looking, owned)' })
     }
 
-    // Validate fields. The "Prior milestone failed leads" preset (toggle on
-    // the export modal) carries its own field defaults so the resulting CSV
-    // is immediately useful for re-targeting — agent, lead, milestone notes,
-    // why they failed.
-    const priorMilestonePreset = [
-      'name',
-      'phone',
-      'alternatePhone',
-      'email',
-      'city',
-      'source',
-      'ownerName',
-      'priorMilestones',
-      'visitDoneAt',
-      'visitDoneNote',
-      'meetingDoneAt',
-      'meetingDoneNote',
-      'failedReason',
-      'failedAt',
-      'failedNote',
-      'updatedAt',
-    ]
-    const fieldsToExport: string[] =
-      fields && Array.isArray(fields) && fields.length > 0
-        ? fields
-        : priorMilestoneOnly
-          ? priorMilestonePreset
-          : EXPORTABLE_FIELDS.map((f) => f.key)
-    
+    // Resolve the exact columns to export. The caller's selection is
+    // authoritative — an empty or unknown selection is a 400 rather than a
+    // silent fall back to every column. Only a completely absent `fields` key
+    // uses defaults (the prior-milestone preset when that toggle is on).
+    const resolved = resolveExportFields(fields, { priorMilestoneOnly: Boolean(priorMilestoneOnly) })
+    if (!resolved.ok) {
+      return res.status(400).json({ success: false, message: resolved.message })
+    }
+    const fieldsToExport = resolved.fields
+
     // Build date filter
     const now = new Date()
     let dateFrom: Date | null = null
@@ -2717,94 +2694,13 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
       .sort({ createdAt: -1 })
       .lean()
 
-    // Helper: pull the most-recent statusNotes entry for a given disposition
-    // off a lead. Returns null when the lead never reached that milestone.
-    const latestNoteFor = (lead: any, status: string) => {
-      const matches = (lead.statusNotes || []).filter((n: any) => n?.status === status)
-      if (matches.length === 0) return null
-      return matches.reduce((latest: any, current: any) => {
-        const a = latest?.createdAt ? new Date(latest.createdAt).getTime() : 0
-        const b = current?.createdAt ? new Date(current.createdAt).getTime() : 0
-        return b >= a ? current : latest
-      }, matches[0])
-    }
-
-    // Transform leads for export
-    const exportData = leads.map((lead: any) => {
-      const row: Record<string, any> = {}
-
-      const visitDone = latestNoteFor(lead, 'Visit Done')
-      const meetingDone = latestNoteFor(lead, 'Meeting Done')
-      const failed = latestNoteFor(lead, 'Failed')
-
-      fieldsToExport.forEach((field: string) => {
-        switch (field) {
-          case 'ownerName':
-            row[field] = lead.owner?.name || 'Unassigned'
-            break
-          case 'plotOwned':
-            row[field] = lead.plotOwned === true ? 'Yes' : lead.plotOwned === false ? 'No' : ''
-            break
-          case 'createdAt':
-          case 'updatedAt':
-          case 'lastActivity':
-          case 'nextFollowUp':
-            row[field] = lead[field] ? new Date(lead[field]).toISOString() : ''
-            break
-          case 'priorMilestones': {
-            const hits: string[] = []
-            if (visitDone) hits.push('Visit Done')
-            if (meetingDone) hits.push('Meeting Done')
-            row[field] = hits.join(', ')
-            break
-          }
-          case 'visitDoneNote':
-            row[field] = visitDone?.note || ''
-            break
-          case 'visitDoneAt':
-            row[field] = visitDone?.createdAt ? new Date(visitDone.createdAt).toISOString() : ''
-            break
-          case 'meetingDoneNote':
-            row[field] = meetingDone?.note || ''
-            break
-          case 'meetingDoneAt':
-            row[field] = meetingDone?.createdAt ? new Date(meetingDone.createdAt).toISOString() : ''
-            break
-          case 'failedNote':
-            row[field] = failed?.note || ''
-            break
-          case 'failedAt':
-            row[field] = failed?.createdAt ? new Date(failed.createdAt).toISOString() : ''
-            break
-          default:
-            row[field] = lead[field] ?? ''
-        }
-      })
-
-      return row
-    })
-
-    // Get field labels
-    const fieldLabels = fieldsToExport.map((key: string) => {
-      const fieldDef = EXPORTABLE_FIELDS.find(f => f.key === key)
-      return fieldDef?.label || key
-    })
+    // Transform leads for export — one column per selected field, nothing else.
+    const exportData = leads.map((lead: any) => buildLeadRow(lead, fieldsToExport))
+    const fieldLabels = labelsFor(fieldsToExport)
 
     // Generate CSV
     if (format === 'csv') {
-      const csvHeaders = fieldLabels.join(',')
-      const csvRows = exportData.map((row: any) => {
-        return fieldsToExport.map((field: string) => {
-          const value = row[field]
-          // Escape values with commas or quotes
-          const stringValue = String(value ?? '')
-          if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
-            return `"${stringValue.replace(/"/g, '""')}"`
-          }
-          return stringValue
-        }).join(',')
-      })
-      const csvContent = [csvHeaders, ...csvRows].join('\n')
+      const csvContent = toCsv(exportData, fieldsToExport)
 
       res.setHeader('Content-Type', 'text/csv')
       res.setHeader('Content-Disposition', `attachment; filename="leads_${dateRange}_${new Date().toISOString().split('T')[0]}.csv"`)

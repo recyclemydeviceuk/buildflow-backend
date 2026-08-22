@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { AuditLog } from '../models/AuditLog'
+import { LEAD_TRANSFER_ACTIONS, normalizeLeadTransferLog } from '../utils/leadTransferHistory'
 
 const LEAD_DISPOSITIONS = ['New', 'Contacted', 'Qualified', 'Proposal Sent', 'Negotiation', 'Won', 'Lost', 'Not Interested', 'Invalid']
 
@@ -92,6 +93,175 @@ export const getAuditLogFilters = async (_req: Request, res: Response, next: Nex
         actions: normalizedActions,
         roles: normalizedRoles,
         leadStatuses: LEAD_DISPOSITIONS,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+export const getLeadTransferHistory = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const {
+      page = '1',
+      limit = '25',
+      search,
+      type,
+      actorRole,
+      dateFrom,
+      dateTo,
+    } = req.query as Record<string, string>
+
+    const pageNum = Math.max(1, Number.parseInt(page, 10) || 1)
+    const limitNum = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 25))
+    const validTypes = ['assignment', 'transfer', 'unassignment']
+    if (type && !validTypes.includes(type)) {
+      return res.status(400).json({ success: false, message: 'Invalid transfer type' })
+    }
+    if (actorRole && !['manager', 'representative'].includes(actorRole)) {
+      return res.status(400).json({ success: false, message: 'Invalid actor role' })
+    }
+
+    const candidateFilter: Record<string, any> = {
+      $or: [
+        { entity: 'Lead', action: { $in: [...LEAD_TRANSFER_ACTIONS] } },
+        {
+          entity: 'QueueItem',
+          action: 'queue.assigned',
+          'metadata.leadTransferRecorded': { $ne: true },
+        },
+      ],
+    }
+
+    // Legacy bulk updates share an action with ordinary field edits. Compare
+    // owner IDs (falling back to legacy owner names) inside Mongo so only real
+    // ownership changes are counted and paginated.
+    const ownerIdentity = (side: 'before' | 'after') => ({
+      $ifNull: [
+        side === 'after'
+          ? { $ifNull: ['$after.owner', '$after.assignedTo'] }
+          : '$before.owner',
+        {
+          $cond: [
+            {
+              $gt: [
+                {
+                  $strLenCP: {
+                    $ifNull: [
+                      side === 'after'
+                        ? { $ifNull: ['$after.ownerName', '$after.assignedToName'] }
+                        : '$before.ownerName',
+                      '',
+                    ],
+                  },
+                },
+                0,
+              ],
+            },
+            {
+              $concat: [
+                'name:',
+                {
+                  $toLower:
+                    side === 'after'
+                      ? { $ifNull: ['$after.ownerName', '$after.assignedToName'] }
+                      : '$before.ownerName',
+                },
+              ],
+            },
+            null,
+          ],
+        },
+      ],
+    })
+    const fromIdentity = ownerIdentity('before')
+    const toIdentity = ownerIdentity('after')
+    const ownershipChanged = { $ne: [fromIdentity, toIdentity] }
+
+    if (type === 'assignment') {
+      candidateFilter.$expr = {
+        $and: [{ $eq: [fromIdentity, null] }, { $ne: [toIdentity, null] }],
+      }
+    } else if (type === 'transfer') {
+      candidateFilter.$expr = {
+        $and: [
+          { $ne: [fromIdentity, null] },
+          { $ne: [toIdentity, null] },
+          ownershipChanged,
+        ],
+      }
+    } else if (type === 'unassignment') {
+      candidateFilter.$expr = {
+        $and: [{ $ne: [fromIdentity, null] }, { $eq: [toIdentity, null] }],
+      }
+    } else {
+      candidateFilter.$expr = ownershipChanged
+    }
+
+    if (actorRole) candidateFilter.actorRole = actorRole
+    if (dateFrom || dateTo) {
+      const createdAt: Record<string, Date> = {}
+      let parsedFrom: Date | null = null
+      let parsedTo: Date | null = null
+      if (dateFrom) {
+        parsedFrom = new Date(dateFrom)
+        if (isNaN(parsedFrom.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid from date' })
+        }
+        parsedFrom.setHours(0, 0, 0, 0)
+        createdAt.$gte = parsedFrom
+      }
+      if (dateTo) {
+        parsedTo = new Date(dateTo)
+        if (isNaN(parsedTo.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid to date' })
+        }
+        parsedTo.setHours(23, 59, 59, 999)
+        createdAt.$lte = parsedTo
+      }
+      if (parsedFrom && parsedTo && parsedFrom > parsedTo) {
+        return res.status(400).json({ success: false, message: 'From date must be on or before to date' })
+      }
+      candidateFilter.createdAt = createdAt
+    }
+
+    if (search?.trim()) {
+      const safeSearch = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const match = { $regex: safeSearch, $options: 'i' }
+      candidateFilter.$or = [
+        { actorName: match },
+        { 'before.name': match },
+        { 'after.name': match },
+        { 'before.phone': match },
+        { 'after.phone': match },
+        { 'after.leadName': match },
+        { 'before.ownerName': match },
+        { 'after.ownerName': match },
+        { 'after.assignedToName': match },
+      ]
+    }
+
+    const start = (pageNum - 1) * limitNum
+    const [logs, total] = await Promise.all([
+      AuditLog.find(candidateFilter)
+        .sort({ createdAt: -1 })
+        .skip(start)
+        .limit(limitNum)
+        .lean(),
+      AuditLog.countDocuments(candidateFilter),
+    ])
+    const data = logs
+      .map((log) => normalizeLeadTransferLog(log))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+
+    return res.status(200).json({
+      success: true,
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum),
       },
     })
   } catch (err) {

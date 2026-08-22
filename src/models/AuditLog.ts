@@ -9,6 +9,7 @@ export interface IAuditLog extends Document {
   entityId: string
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  metadata?: Record<string, unknown> | null
   ipAddress?: string | null
   userAgent?: string | null
   createdAt: Date
@@ -24,6 +25,7 @@ const AuditLogSchema = new Schema<IAuditLog>(
     entityId: { type: String, required: true },
     before: { type: Schema.Types.Mixed, default: null },
     after: { type: Schema.Types.Mixed, default: null },
+    metadata: { type: Schema.Types.Mixed, default: null },
     ipAddress: { type: String, default: null },
     userAgent: { type: String, default: null },
   },
@@ -34,5 +36,6 @@ AuditLogSchema.index({ actor: 1 })
 AuditLogSchema.index({ entity: 1, entityId: 1 })
 AuditLogSchema.index({ action: 1 })
 AuditLogSchema.index({ createdAt: -1 })
+AuditLogSchema.index({ entity: 1, action: 1, createdAt: -1 })
 
 export const AuditLog: Model<IAuditLog> = mongoose.model<IAuditLog>('AuditLog', AuditLogSchema)

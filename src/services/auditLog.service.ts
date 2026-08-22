@@ -10,6 +10,7 @@ interface LogActionParams {
   entityId: string
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  metadata?: Record<string, unknown> | null
   ipAddress?: string
   userAgent?: string
 }
@@ -25,6 +26,7 @@ export const logAction = async (params: LogActionParams): Promise<void> => {
       entityId: params.entityId,
       before: params.before || null,
       after: params.after || null,
+      metadata: params.metadata || null,
       ipAddress: params.ipAddress || null,
       userAgent: params.userAgent || null,
     })

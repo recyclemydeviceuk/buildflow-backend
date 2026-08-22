@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
+    "test": "TS_NODE_FILES=true node -r ts-node/register --test src/**/*.test.ts",
     "start": "node dist/server.js",
     "lint": "eslint src --ext .ts",
     "sync:exotel": "node -r ts-node/register/transpile-only src/scripts/runExotelCallSync.ts",
