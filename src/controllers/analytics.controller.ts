@@ -813,7 +813,7 @@ export const getConversionFunnel = async (req: Request, res: Response, next: Nex
       }
     }
 
-    const stages = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed']
+    const stages = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed']
 
     const result = await Lead.aggregate([
       { $match: matchStage },

@@ -11,6 +11,8 @@ import {
   bulkDeleteLeads,
   assignLead,
   updateDisposition,
+  previewUndoDisposition,
+  undoDisposition,
   getLeadFilters,
   getFollowUpCounts,
   lookupLeadsByPhones,
@@ -121,6 +123,15 @@ router.patch(
   [param('id').isMongoId(), body('disposition').notEmpty()],
   validate,
   updateDisposition
+)
+
+router.get('/:id/disposition/undo', [param('id').isMongoId()], validate, previewUndoDisposition)
+
+router.post(
+  '/:id/disposition/undo',
+  [param('id').isMongoId(), body('notes').optional({ nullable: true }).isString()],
+  validate,
+  undoDisposition
 )
 
 router.patch(

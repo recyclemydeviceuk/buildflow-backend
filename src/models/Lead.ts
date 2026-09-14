@@ -8,6 +8,16 @@ export interface ILeadStatusNote {
   createdByName?: string | null
 }
 
+export interface ILeadDispositionChange {
+  from: string
+  to: string
+  kind: 'change' | 'undo'
+  changedAt: Date
+  changedBy?: mongoose.Types.ObjectId | null
+  changedByName?: string | null
+  note?: string | null
+}
+
 export interface ILead extends Document {
   name: string
   phone: string
@@ -19,6 +29,10 @@ export interface ILead extends Document {
   meetingType?: 'VC' | 'Client Place' | null
   meetingLocation?: string | null
   failedReason?: string | null
+  // Future Lead — the month the customer expects to be ready, as 'YYYY-MM'.
+  // Stored as a plain string (not a Date) so it is timezone-proof and sorts
+  // lexicographically in the Future Leads tab.
+  expectedMonth?: string | null
   // Booking Done fields
   bookingPackage?: string | null
   proposedProjectValue?: string | null
@@ -65,6 +79,9 @@ export interface ILead extends Document {
   tags: string[]
   notes?: string | null
   statusNotes: ILeadStatusNote[]
+  // Ordered log of every disposition change. Powers "Undo": the last entry's
+  // `from` is where an undo takes the lead back to, and undo pops that entry.
+  dispositionHistory: ILeadDispositionChange[]
   websiteFormData?: Record<string, string> | null
   createdAt: Date
   updatedAt: Date
@@ -74,13 +91,26 @@ const LeadStatusNoteSchema = new Schema<ILeadStatusNote>(
   {
     status: {
       type: String,
-      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed'],
+      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed'],
       required: true,
     },
     note: { type: String, required: true, trim: true },
     createdAt: { type: Date, default: Date.now },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     createdByName: { type: String, default: null },
+  },
+  { _id: true }
+)
+
+const LeadDispositionChangeSchema = new Schema<ILeadDispositionChange>(
+  {
+    from: { type: String, required: true },
+    to: { type: String, required: true },
+    kind: { type: String, enum: ['change', 'undo'], default: 'change' },
+    changedAt: { type: Date, default: Date.now },
+    changedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    changedByName: { type: String, default: null },
+    note: { type: String, default: null },
   },
   { _id: true }
 )
@@ -95,12 +125,14 @@ const LeadSchema = new Schema<ILead>(
     source: { type: String, required: true },
     disposition: {
       type: String,
-      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed'],
+      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed'],
       default: 'New',
     },
     meetingType: { type: String, enum: ['VC', 'Client Place', null], default: null },
     meetingLocation: { type: String, default: null, trim: true },
     failedReason: { type: String, default: null, trim: true },
+    // 'YYYY-MM' — see ILead.expectedMonth
+    expectedMonth: { type: String, default: null, trim: true, match: /^\d{4}-(0[1-9]|1[0-2])$/ },
     // Booking Done fields
     bookingPackage: { type: String, default: null, trim: true },
     proposedProjectValue: { type: String, default: null, trim: true },
@@ -147,6 +179,7 @@ const LeadSchema = new Schema<ILead>(
     tags: [{ type: String }],
     notes: { type: String, default: null },
     statusNotes: { type: [LeadStatusNoteSchema], default: [] },
+    dispositionHistory: { type: [LeadDispositionChangeSchema], default: [] },
     websiteFormData: { type: Schema.Types.Mixed, default: null },
   },
   { timestamps: true }
@@ -163,6 +196,7 @@ LeadSchema.index({ city: 1 })
 LeadSchema.index({ createdAt: -1 })
 LeadSchema.index({ isInQueue: 1 })
 LeadSchema.index({ owner: 1, disposition: 1 })
+LeadSchema.index({ disposition: 1, expectedMonth: 1 })
 LeadSchema.index({ name: 'text', phone: 'text', alternatePhone: 'text', email: 'text' })
 
 // ─────────────────────────────────────────────────────────────────────────

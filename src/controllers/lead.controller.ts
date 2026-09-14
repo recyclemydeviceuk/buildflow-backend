@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
+import { EXPECTED_MONTH_RE, resolveUndoTarget } from '../utils/dispositionUndo'
 import mongoose from 'mongoose'
 import { Lead } from '../models/Lead'
 import { User } from '../models/User'
@@ -29,7 +30,7 @@ import { parseImportFile } from '../utils/csvParser'
 import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
 import { isValid, parse as parseDate, parseISO } from 'date-fns'
 
-const DISPOSITIONS = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Failed']
+const DISPOSITIONS = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed']
 const FAILED_REASONS = ['Budget Issue', 'Not Interested', 'Location Issue', 'Timeline Issue', 'Competition', 'Not Responding', 'Not Enquired', 'Invalid Number', 'Other']
 const MEETING_TYPES = ['VC', 'Client Place']
 type BulkLeadUpdatePayload = {
@@ -123,6 +124,23 @@ const buildStatusNote = (status: string, note: string, req: Request) => ({
   createdBy: new mongoose.Types.ObjectId(req.user!.id),
   createdByName: req.user!.name,
 })
+
+const buildDispositionChange = (
+  from: string,
+  to: string,
+  note: string | null,
+  req: Request,
+  kind: 'change' | 'undo' = 'change'
+) => ({
+  from,
+  to,
+  kind,
+  note,
+  changedAt: new Date(),
+  changedBy: new mongoose.Types.ObjectId(req.user!.id),
+  changedByName: req.user!.name,
+})
+
 
 const hasMeaningfulValue = (value: unknown): boolean => String(value ?? '').trim().length > 0
 
@@ -325,6 +343,12 @@ const resolveDisposition = (value?: string | null): string => {
     notinterested: 'Failed',
     notqualified: 'Failed',
     invalid: 'Failed',
+    future: 'Future',
+    futurelead: 'Future',
+    futureleads: 'Future',
+    notnow: 'Future',
+    later: 'Future',
+    callbacklater: 'Future',
     proposalsent: 'Negotiation Done',
   }
   const aliasedDisposition = aliases[normalizedValue]
@@ -723,9 +747,18 @@ const buildBulkUpdateDoc = (
   const update: Record<string, unknown> = { $set }
 
   if (payload.disposition !== undefined && options.dispositionNote) {
-    update.$push = {
+    const $push: Record<string, unknown> = {
       statusNotes: buildStatusNote(payload.disposition, options.dispositionNote, options.req),
     }
+    if (lead.disposition !== payload.disposition) {
+      $push.dispositionHistory = buildDispositionChange(
+        lead.disposition,
+        payload.disposition,
+        options.dispositionNote,
+        options.req
+      )
+    }
+    update.$push = $push
   }
 
   return update
@@ -1597,6 +1630,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
       city,
       owner,
       reminderStatus,
+      sortBy,
       dateFrom,
       dateTo,
       dateField,
@@ -1803,8 +1837,25 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     const limitNum = Math.min(100, parseInt(limit))
     const skip = (pageNum - 1) * limitNum
 
+    // Future Leads tab sorts by the customer's expected month (soonest first);
+    // leads without a month sink to the bottom. Everything else keeps the
+    // newest-first date ordering.
+    const sort: Record<string, 1 | -1> =
+      String(sortBy || '') === 'expectedMonth'
+        ? { expectedMonthMissing: 1, expectedMonth: 1, [dateFieldKey]: -1 }
+        : { [dateFieldKey]: -1 }
+
     const [leads, total] = await Promise.all([
-      Lead.find(filter).sort({ [dateFieldKey]: -1 }).skip(skip).limit(limitNum),
+      sort.expectedMonthMissing !== undefined
+        ? Lead.aggregate([
+            { $match: filter },
+            { $addFields: { expectedMonthMissing: { $cond: [{ $ifNull: ['$expectedMonth', false] }, 0, 1] } } },
+            { $sort: sort },
+            { $skip: skip },
+            { $limit: limitNum },
+            { $project: { expectedMonthMissing: 0 } },
+          ])
+        : Lead.find(filter).sort(sort).skip(skip).limit(limitNum),
       Lead.countDocuments(filter),
     ])
 
@@ -1971,6 +2022,14 @@ export const updateLead = async (req: Request, res: Response, next: NextFunction
           message: error instanceof Error ? error.message : 'Created at date and time is invalid',
         })
       }
+    }
+
+    if (updates.expectedMonth !== undefined && updates.expectedMonth !== null) {
+      const month = String(updates.expectedMonth).trim()
+      if (!EXPECTED_MONTH_RE.test(month)) {
+        return res.status(400).json({ success: false, message: 'Expected month must be in YYYY-MM format' })
+      }
+      updates.expectedMonth = month
     }
 
     const { $set, $push, ...directUpdates } = updates as any
@@ -2334,7 +2393,7 @@ export const respondToAssignment = async (req: Request, res: Response, next: Nex
 
 export const updateDisposition = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { disposition, notes } = req.body
+    const { disposition, notes, expectedMonth } = req.body
     const existing = await Lead.findById(req.params.id)
     if (!existing) {
       return res.status(404).json({ success: false, message: 'Lead not found' })
@@ -2356,6 +2415,24 @@ export const updateDisposition = async (req: Request, res: Response, next: NextF
       })
     }
 
+    // Optional 'YYYY-MM' — only meaningful for Future leads, but harmless to
+    // accept alongside any status so the client can save it atomically.
+    const extraSet: Record<string, unknown> = {}
+    if (expectedMonth !== undefined) {
+      if (expectedMonth === null || expectedMonth === '') {
+        extraSet.expectedMonth = null
+      } else if (EXPECTED_MONTH_RE.test(String(expectedMonth).trim())) {
+        extraSet.expectedMonth = String(expectedMonth).trim()
+      } else {
+        return res.status(400).json({ success: false, message: 'Expected month must be in YYYY-MM format' })
+      }
+    }
+
+    const $push: Record<string, unknown> = { statusNotes: buildStatusNote(disposition, nextNote, req) }
+    if (existing.disposition !== disposition) {
+      $push.dispositionHistory = buildDispositionChange(existing.disposition, disposition, nextNote, req)
+    }
+
     // Atomic update — avoids re-validating unrelated pre-existing fields
     // (e.g. an empty city left over from a partial import) which would
     // otherwise throw ValidationError on doc.save() and surface as a 500.
@@ -2367,8 +2444,9 @@ export const updateDisposition = async (req: Request, res: Response, next: NextF
           lastActivityNote: nextNote,
           notes: nextNote,
           lastActivity: new Date(),
+          ...extraSet,
         },
-        $push: { statusNotes: buildStatusNote(disposition, nextNote, req) },
+        $push,
       },
       { new: true }
     )
@@ -2385,6 +2463,95 @@ export const updateDisposition = async (req: Request, res: Response, next: NextF
     })
 
     return res.status(200).json({ success: true, data: updated })
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * GET /leads/:id/disposition/undo — preview what an undo would do without
+ * changing anything. The confirmation modal uses this so the rep sees the
+ * exact "Failed → Interested" transition before agreeing to it.
+ */
+export const previewUndoDisposition = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const existing = await Lead.findById(req.params.id)
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Lead not found' })
+    }
+    const target = resolveUndoTarget(existing)
+    return res.status(200).json({
+      success: true,
+      data: {
+        canUndo: Boolean(target) && canAccessLead(req, existing),
+        from: existing.disposition,
+        to: target?.to ?? null,
+        source: target?.source ?? null,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * POST /leads/:id/disposition/undo — revert the most recent status change.
+ * The lead goes back to the status it had before the last change; a status
+ * note records the reversal; the popped history entry is removed so a second
+ * undo steps back one more change. Status-specific details (failed reason,
+ * expected month, meeting info, booking data) are left untouched so nothing
+ * is lost if the rep re-applies the status later.
+ */
+export const undoDisposition = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const existing = await Lead.findById(req.params.id)
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Lead not found' })
+    }
+    if (!canAccessLead(req, existing)) {
+      return res.status(403).json({ success: false, message: 'You do not have access to update this lead' })
+    }
+
+    const target = resolveUndoTarget(existing)
+    if (!target) {
+      return res.status(400).json({ success: false, message: 'This lead has no previous status to go back to' })
+    }
+
+    const before = existing.toObject()
+    const from = existing.disposition
+    const reason = typeof req.body?.notes === 'string' ? req.body.notes.trim() : ''
+    const note = reason
+      ? `Undo: status reverted from ${from} to ${target.to} — ${reason}`
+      : `Undo: status reverted from ${from} to ${target.to}`
+
+    const update: Record<string, unknown> = {
+      $set: {
+        disposition: target.to,
+        lastActivityNote: note,
+        notes: note,
+        lastActivity: new Date(),
+      },
+      $push: { statusNotes: buildStatusNote(target.to, note, req) },
+    }
+    if (target.source === 'history') {
+      // Pop the change we are reverting so the next undo walks back further.
+      update.$pop = { dispositionHistory: 1 }
+    }
+
+    const updated = await Lead.findByIdAndUpdate(existing._id, update, { new: true })
+
+    await AuditLog.create({
+      actor: req.user!.id,
+      actorName: req.user!.name,
+      actorRole: req.user!.role,
+      action: 'lead.disposition_undone',
+      entity: 'Lead',
+      entityId: req.params.id,
+      before,
+      after: updated!.toObject(),
+    })
+
+    return res.status(200).json({ success: true, data: updated, meta: { from, to: target.to } })
   } catch (err) {
     next(err)
   }

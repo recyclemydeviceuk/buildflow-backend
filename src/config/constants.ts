@@ -37,6 +37,7 @@ export const DISPOSITIONS = [
   'Booking Done',
   'Agreement Done',
   'Prospect',
+  'Future',
   'Failed',
 ] as const
 
