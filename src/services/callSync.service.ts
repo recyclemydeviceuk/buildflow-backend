@@ -4,20 +4,17 @@ import { User } from '../models/User'
 import { DeletedLeadPhone } from '../models/DeletedLeadPhone'
 import { emitToTeam, emitUserAvailabilityUpdate } from '../config/socket'
 import { exotelConfig } from '../config/exotel'
-import { listCalls } from './exotel.service'
+import { getManagedCallDetails, listCalls } from './exotel.service'
 import { ExotelBulkCall } from '../types/exotel.types'
 import { logger } from '../utils/logger'
 import { notifyMissedCall, notifyNewLeadCreated } from './notification.service'
-
-type LocalCallStatus =
-  | 'initiated'
-  | 'ringing'
-  | 'in-progress'
-  | 'completed'
-  | 'failed'
-  | 'no-answer'
-  | 'busy'
-  | 'canceled'
+import {
+  OPEN_CALL_STATUSES,
+  isOpenCallStatus,
+  isStaleOpenCall,
+  resolveManagedCallState,
+  type LocalCallStatus,
+} from '../utils/callState'
 
 interface SyncExotelHistoryOptions {
   after?: string
@@ -113,7 +110,7 @@ const parseExotelDate = (value?: string | null): Date | null => {
   return Number.isNaN(parsedAsIst.getTime()) ? null : parsedAsIst
 }
 
-const normalizeStatus = (status?: string | null): LocalCallStatus => {
+export const normalizeStatus = (status?: string | null): LocalCallStatus => {
   switch ((status || '').toLowerCase()) {
     case 'ringing':
       return 'ringing'
@@ -585,6 +582,25 @@ const emitCallEvent = (call: any, includeNewEvent: boolean) => {
   emitToTeam('all', 'call:status_updated', payload)
 }
 
+// Atomic aggregation-pipeline update:
+//   • always bumps lastActivity, and
+//   • advances disposition from "New" → "Contacted/Open" ONLY IF it is
+//     still "New" at write time. Closes the race window that existed in
+//     the previous read-then-write implementation where a rep's manual
+//     change between fetch and save could be stomped.
+const markLeadContactedAfterCall = async (leadId: unknown, activityAt: Date) => {
+  await Lead.updateOne({ _id: leadId }, [
+    {
+      $set: {
+        lastActivity: activityAt,
+        disposition: {
+          $cond: [{ $eq: ['$disposition', 'New'] }, 'Contacted/Open', '$disposition'],
+        },
+      },
+    },
+  ])
+}
+
 const syncRepresentativeAvailability = async (call: any, status: LocalCallStatus) => {
   if (!call.representative) return
 
@@ -683,15 +699,21 @@ export const reconcileRepresentativeAvailabilityStates = async (): Promise<Avail
   let repairedCount = 0
 
   for (const representative of representatives) {
+    // Only an *open* call may hold the lock. Matching activeCallSid without a
+    // status filter re-applied the SID of an already-finished call, leaving the
+    // rep stuck on "Dialing" forever.
     const openCall =
       (representative.activeCallSid
-        ? await Call.findOne({ exotelCallSid: representative.activeCallSid })
+        ? await Call.findOne({
+            exotelCallSid: representative.activeCallSid,
+            status: { $in: OPEN_CALL_STATUSES },
+          })
             .select('status exotelCallSid representative')
             .lean()
         : null) ||
       (await Call.findOne({
         representative: representative._id,
-        status: { $in: ['initiated', 'ringing', 'in-progress'] },
+        status: { $in: OPEN_CALL_STATUSES },
       })
         .sort({ updatedAt: -1, startedAt: -1 })
         .select('status exotelCallSid representative')
@@ -928,22 +950,7 @@ const syncSingleCallRecord = async (
   }
 
   if ((wasCreated || hasChanges) && outcome === 'Connected') {
-    // Atomic aggregation-pipeline update:
-    //   • always bumps lastActivity, and
-    //   • advances disposition from "New" → "Contacted/Open" ONLY IF it is
-    //     still "New" at write time. Closes the race window that existed in
-    //     the previous read-then-write implementation where a rep's manual
-    //     change between fetch and save could be stomped.
-    await Lead.updateOne({ _id: call.lead }, [
-      {
-        $set: {
-          lastActivity: endedAt || startedAt || new Date(),
-          disposition: {
-            $cond: [{ $eq: ['$disposition', 'New'] }, 'Contacted/Open', '$disposition'],
-          },
-        },
-      },
-    ])
+    await markLeadContactedAfterCall(call.lead, endedAt || startedAt || new Date())
   }
 
   // Always sync availability for terminal statuses to prevent stuck "in-call" states
@@ -1062,4 +1069,148 @@ export const syncRecentExotelCallHistory = async (): Promise<SyncExotelHistoryRe
     maxPages: 20,
     pageSize: 100,
   })
+}
+
+export type CallRefreshResult = 'closed' | 'updated' | 'unchanged' | 'unavailable'
+
+const OPEN_STATUS_RANK: Record<string, number> = { initiated: 0, ringing: 1, 'in-progress': 2 }
+
+/**
+ * Pulls one call's authoritative state from Exotel's v3 API and applies it,
+ * releasing the representative once the call has ended. BuildFlow places its
+ * outbound calls through v3, so this keeps working even when the status
+ * webhook never reaches us. Returns 'unavailable' when Exotel has nothing.
+ */
+export const refreshCallFromExotel = async (
+  call: any,
+  options: { emitEvents?: boolean } = {}
+): Promise<CallRefreshResult> => {
+  if (!call?.exotelCallSid) return 'unavailable'
+
+  const details = await getManagedCallDetails(call.exotelCallSid)
+  if (!details) return 'unavailable'
+
+  const wasOpen = isOpenCallStatus(call.status)
+  const direction: 'incoming' | 'outbound' = details.direction
+    ? details.direction.startsWith('inbound') ? 'incoming' : 'outbound'
+    : call.direction === 'incoming' ? 'incoming' : 'outbound'
+  let hasChanges = false
+
+  const assign = (field: string, value: unknown) => {
+    if ((call[field] ?? null) !== (value ?? null)) {
+      call[field] = value
+      hasChanges = true
+    }
+  }
+  const assignDate = (field: string, raw?: string | null) => {
+    const value = parseExotelDate(raw)
+    const current = call[field] ? new Date(call[field]).getTime() : null
+    if (value && value.getTime() !== current) {
+      call[field] = value
+      hasChanges = true
+    }
+  }
+
+  // Leg details only come with a status; an active call without one must not
+  // wipe what the webhook already recorded.
+  if (details.status) {
+    const legState = deriveLegState(details.status, direction)
+    assign('exotelStatusRaw', legState.exotelStatusRaw)
+    assign('representativeLegStatus', legState.representativeLegStatus)
+    assign('customerLegStatus', legState.customerLegStatus)
+    assign('representativeAnswered', legState.representativeAnswered)
+    assign('customerAnswered', legState.customerAnswered)
+  }
+  if (details.virtual_number) assign('exophoneNumber', details.virtual_number)
+  const duration = details.total_talk_time || details.total_duration || 0
+  if (duration) assign('duration', duration)
+  assignDate('startedAt', details.start_time)
+  assignDate('endedAt', details.end_time)
+  if (details.recordings?.[0]?.url) assign('recordingUrl', details.recordings[0].url)
+
+  if (wasOpen) {
+    let resolved = resolveManagedCallState(details)
+    // Still active long after both legs would have stopped ringing, so it was
+    // answered and the "answered" event never arrived.
+    if (!resolved && details.state === 'active' && call.status !== 'in-progress' && isStaleOpenCall(call)) {
+      resolved = { status: 'in-progress', outcome: null, terminal: false }
+    }
+    if (resolved && (resolved.terminal || OPEN_STATUS_RANK[resolved.status] > OPEN_STATUS_RANK[call.status])) {
+      assign('status', resolved.status)
+      // Keep an outcome the rep already chose in call feedback.
+      if (resolved.terminal && !call.outcome && resolved.outcome) assign('outcome', resolved.outcome)
+    }
+  }
+
+  if (hasChanges) {
+    await call.save()
+  }
+
+  const closed = wasOpen && !isOpenCallStatus(call.status)
+
+  if (TERMINAL_STATUSES.has(call.status) || call.status === 'in-progress') {
+    await syncRepresentativeAvailability(call, call.status)
+  }
+
+  if (closed && call.outcome === 'Connected') {
+    await markLeadContactedAfterCall(call.lead, call.endedAt || new Date())
+  }
+
+  if (hasChanges && options.emitEvents) {
+    emitCallEvent(call, false)
+  }
+
+  if (closed) {
+    void notifyMissedCall(String(call._id)).catch(() => null)
+    logger.info('Call closed from Exotel call details', {
+      callSid: call.exotelCallSid,
+      status: call.status,
+      exotelState: details.state,
+      exotelStatus: details.status,
+    })
+  }
+
+  if (closed) return 'closed'
+  return hasChanges ? 'updated' : 'unchanged'
+}
+
+/**
+ * Last resort when Exotel cannot tell us anything about an open call: once it
+ * is older than any real call could stay in that state, close it so the rep is
+ * no longer locked out of dialing.
+ */
+export const closeStaleOpenCall = async (
+  call: any,
+  options: { emitEvents?: boolean } = {}
+): Promise<boolean> => {
+  if (!isStaleOpenCall(call)) return false
+
+  const previousStatus = call.status
+  call.status = 'failed'
+  await call.save()
+  await syncRepresentativeAvailability(call, 'failed')
+
+  if (options.emitEvents) {
+    emitCallEvent(call, false)
+  }
+
+  logger.warn('Closed stale open call that Exotel could not resolve', {
+    callSid: call.exotelCallSid,
+    previousStatus,
+    startedAt: call.startedAt,
+  })
+
+  return true
+}
+
+/** Brings an open call up to date with Exotel; true only if it is still genuinely open. */
+export const settleOpenCall = async (
+  call: any,
+  options: { emitEvents?: boolean } = {}
+): Promise<boolean> => {
+  const result = await refreshCallFromExotel(call, options)
+  if (result === 'unavailable') {
+    await closeStaleOpenCall(call, options)
+  }
+  return isOpenCallStatus(call.status)
 }

@@ -10,12 +10,13 @@ import { AuditLog } from '../models/AuditLog'
 import { exotelConfig } from '../config/exotel'
 import { emitUserAvailabilityUpdate, type UserAvailabilityPayload } from '../config/socket'
 import { DISPOSITIONS } from '../config/constants'
-import { syncExotelCallHistory } from '../services/callSync.service'
-import { ExotelManagedCallError, getManagedCallDetails, initiateManagedCall } from '../services/exotel.service'
+import { closeStaleOpenCall, refreshCallFromExotel, settleOpenCall, syncExotelCallHistory } from '../services/callSync.service'
+import { ExotelManagedCallError, initiateManagedCall } from '../services/exotel.service'
 import { logger } from '../utils/logger'
 import { notifyNewLeadCreated } from '../services/notification.service'
 import { normalizeFeatureControls } from '../utils/featureControls'
 import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
+import { OPEN_CALL_STATUSES } from '../utils/callState'
 
 const normalizePhone = (value?: string | null): string => {
   if (!value) return ''
@@ -70,182 +71,6 @@ const normalizeDispositionInput = (value?: string | null): string | null => {
   }
 
   return legacyMap[trimmed.toLowerCase()] || null
-}
-
-const deriveLegState = (
-  rawStatus?: string | null,
-  direction: 'incoming' | 'outbound' = 'outbound'
-) => {
-  const normalized = (rawStatus || '').toLowerCase()
-
-  if (!normalized) {
-    return {
-      exotelStatusRaw: null,
-      representativeLegStatus: null,
-      customerLegStatus: null,
-      representativeAnswered: null,
-      customerAnswered: null,
-    }
-  }
-
-  if (direction === 'incoming') {
-    switch (normalized) {
-      case 'completed':
-        return {
-          exotelStatusRaw: rawStatus || null,
-          representativeLegStatus: 'completed',
-          customerLegStatus: 'completed',
-          representativeAnswered: true,
-          customerAnswered: true,
-        }
-      case 'busy':
-        return {
-          exotelStatusRaw: rawStatus || null,
-          representativeLegStatus: 'busy',
-          customerLegStatus: 'completed',
-          representativeAnswered: false,
-          customerAnswered: true,
-        }
-      case 'no-answer':
-      case 'no_answer':
-      case 'failed':
-      case 'canceled':
-      case 'cancelled':
-        return {
-          exotelStatusRaw: rawStatus || null,
-          representativeLegStatus: 'unanswered',
-          customerLegStatus: 'completed',
-          representativeAnswered: false,
-          customerAnswered: true,
-        }
-      default:
-        return {
-          exotelStatusRaw: rawStatus || null,
-          representativeLegStatus: null,
-          customerLegStatus: null,
-          representativeAnswered: null,
-          customerAnswered: null,
-        }
-    }
-  }
-
-  switch (normalized) {
-    case 'initiated':
-    case 'queued':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'dialing',
-        customerLegStatus: 'waiting',
-        representativeAnswered: null,
-        customerAnswered: null,
-      }
-    case 'ringing':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'completed',
-        customerLegStatus: 'ringing',
-        representativeAnswered: true,
-        customerAnswered: null,
-      }
-    case 'in-progress':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'completed',
-        customerLegStatus: 'completed',
-        representativeAnswered: true,
-        customerAnswered: true,
-      }
-    case 'completed':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'completed',
-        customerLegStatus: 'completed',
-        representativeAnswered: true,
-        customerAnswered: true,
-      }
-    case 'from_leg_unanswered':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'unanswered',
-        customerLegStatus: 'not-dialed',
-        representativeAnswered: false,
-        customerAnswered: false,
-      }
-    case 'from_leg_cancelled':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'cancelled',
-        customerLegStatus: 'not-answered',
-        representativeAnswered: false,
-        customerAnswered: false,
-      }
-    case 'to_leg_unanswered':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'completed',
-        customerLegStatus: 'unanswered',
-        representativeAnswered: true,
-        customerAnswered: false,
-      }
-    case 'to_leg_no_dial':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'completed',
-        customerLegStatus: 'not-dialed',
-        representativeAnswered: true,
-        customerAnswered: false,
-      }
-    case 'from_leg_no_dial':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'not-dialed',
-        customerLegStatus: 'not-dialed',
-        representativeAnswered: false,
-        customerAnswered: false,
-      }
-    case 'busy':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: null,
-        customerLegStatus: 'busy',
-        representativeAnswered: null,
-        customerAnswered: false,
-      }
-    case 'no-answer':
-    case 'no_answer':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: null,
-        customerLegStatus: 'unanswered',
-        representativeAnswered: null,
-        customerAnswered: false,
-      }
-    case 'failed':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: null,
-        customerLegStatus: 'failed',
-        representativeAnswered: null,
-        customerAnswered: false,
-      }
-    case 'canceled':
-    case 'cancelled':
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: 'cancelled',
-        customerLegStatus: 'cancelled',
-        representativeAnswered: false,
-        customerAnswered: false,
-      }
-    default:
-      return {
-        exotelStatusRaw: rawStatus || null,
-        representativeLegStatus: null,
-        customerLegStatus: null,
-        representativeAnswered: null,
-        customerAnswered: null,
-      }
-  }
 }
 
 const ensureLeadForDialerPhone = async (params: {
@@ -313,24 +138,23 @@ const emitRepresentativeAvailability = (representative: {
 }
 
 const reconcileRepresentativeCallState = async (representative: any) => {
-  const openStatuses = ['initiated', 'ringing', 'in-progress']
-  const openCall =
-    (representative.activeCallSid
-      ? await Call.findOne({
-          exotelCallSid: representative.activeCallSid,
-          representative: representative._id,
-          status: { $in: openStatuses },
-        })
-          .select('exotelCallSid status')
-          .lean()
-      : null) ||
-    (await Call.findOne({
-      representative: representative._id,
-      status: { $in: openStatuses },
-    })
-      .sort({ updatedAt: -1, startedAt: -1 })
-      .select('exotelCallSid status')
-      .lean())
+  const openCalls = await Call.find({
+    representative: representative._id,
+    status: { $in: OPEN_CALL_STATUSES },
+  })
+    .sort({ updatedAt: -1, startedAt: -1 })
+    .limit(10)
+
+  // Our record can be stale when Exotel's status webhook is missed, so confirm
+  // each open call with Exotel before letting it block the representative.
+  let openCall: (typeof openCalls)[number] | null = null
+  for (const call of openCalls) {
+    const stillOpen = await settleOpenCall(call, { emitEvents: true })
+    if (!stillOpen) continue
+    if (!openCall || (representative.activeCallSid && call.exotelCallSid === representative.activeCallSid)) {
+      openCall = call
+    }
+  }
 
   let shouldSave = false
 
@@ -796,33 +620,26 @@ export const syncCallFromExotel = async (req: Request, res: Response, next: Next
     const { callSid } = req.params
 
     const existingCall = await Call.findOne({ exotelCallSid: callSid }).exec()
-    const managedCallDetails = await getManagedCallDetails(callSid)
+    // Exotel v3 is the source of truth for calls placed from BuildFlow; this
+    // closes the call and frees the rep even if the status webhook was missed.
+    const refreshed = existingCall
+      ? await refreshCallFromExotel(existingCall, { emitEvents: true })
+      : 'unavailable'
 
-    if (existingCall && managedCallDetails) {
-      const direction = managedCallDetails.direction?.startsWith('inbound') ? 'incoming' : 'outbound'
-      const rawStatus = managedCallDetails.status || (managedCallDetails.state === 'active' ? 'in-progress' : null)
-      const legState = deriveLegState(rawStatus, direction)
+    let syncResult = null
+    if (refreshed === 'unavailable') {
+      syncResult = await syncExotelCallHistory({
+        emitEvents: true,
+        maxPages: 1,
+        pageSize: 10,
+        sids: [callSid],
+      })
 
-      existingCall.exotelStatusRaw = legState.exotelStatusRaw
-      existingCall.direction = direction
-      existingCall.exophoneNumber = managedCallDetails.virtual_number || existingCall.exophoneNumber || null
-      existingCall.representativeLegStatus = legState.representativeLegStatus
-      existingCall.customerLegStatus = legState.customerLegStatus
-      existingCall.representativeAnswered = legState.representativeAnswered
-      existingCall.customerAnswered = legState.customerAnswered
-      existingCall.duration = managedCallDetails.total_talk_time || managedCallDetails.total_duration || existingCall.duration || 0
-      if (managedCallDetails.start_time) existingCall.startedAt = new Date(managedCallDetails.start_time)
-      if (managedCallDetails.end_time) existingCall.endedAt = new Date(managedCallDetails.end_time)
-      if (managedCallDetails.recordings?.[0]?.url) existingCall.recordingUrl = managedCallDetails.recordings[0].url
-      await existingCall.save()
+      const latest = await Call.findOne({ exotelCallSid: callSid }).exec()
+      if (latest) {
+        await closeStaleOpenCall(latest, { emitEvents: true })
+      }
     }
-
-    const syncResult = await syncExotelCallHistory({
-      emitEvents: true,
-      maxPages: 1,
-      pageSize: 10,
-      sids: [callSid],
-    })
 
     const updated = await Call.findOne({ exotelCallSid: callSid }).lean()
 
