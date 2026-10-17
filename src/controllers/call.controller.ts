@@ -288,6 +288,10 @@ export const initiateCall = async (req: Request, res: Response, next: NextFuncti
     if (!lead) {
       return res.status(404).json({ success: false, message: 'Lead not found' })
     }
+    // Reps may only call their own leads (an unassigned lead is claimed below).
+    if (req.user!.role === 'representative' && lead.owner && String(lead.owner) !== String(req.user!.id)) {
+      return res.status(403).json({ success: false, message: 'This number belongs to a lead assigned to someone else' })
+    }
 
     const phoneToCall = useAlternatePhone && lead.alternatePhone ? lead.alternatePhone : lead.phone
     const destinationPhone = toDialablePhone(phoneToCall)

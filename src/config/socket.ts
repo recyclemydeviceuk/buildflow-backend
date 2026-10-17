@@ -1,6 +1,7 @@
 import { Server as HTTPServer } from 'http'
 import { Server as SocketIOServer, Socket } from 'socket.io'
-import { FRONTEND_URL } from './constants'
+import jwt from 'jsonwebtoken'
+import { FRONTEND_URL, JWT_SECRET } from './constants'
 
 export interface UserAvailabilityPayload {
   id: string
@@ -35,6 +36,18 @@ export const initSocket = (httpServer: HTTPServer): SocketIOServer => {
     })
 
     socket.on('join:team', (teamId: string) => {
+      // The managers room carries assignment/transfer events, which reps must
+      // not see. Only a signed manager token may join it. Expiry is ignored
+      // because the socket keeps its handshake token across reconnects.
+      if (teamId === 'managers') {
+        try {
+          const token = (socket.handshake.auth as { token?: string } | undefined)?.token
+          const decoded = jwt.verify(String(token || ''), JWT_SECRET, { ignoreExpiration: true }) as jwt.JwtPayload
+          if (decoded.role !== 'manager') return
+        } catch {
+          return
+        }
+      }
       socket.join(`team:${teamId}`)
     })
 

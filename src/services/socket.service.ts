@@ -27,7 +27,7 @@ export const notifyLeadAssigned = (
     city: extras.city,
     source: extras.source,
   }
-  emitToTeam('all', 'lead:assigned', payload)
+  emitToTeam('managers', 'lead:assigned', payload)
   emitToUser(repId, 'lead:assigned_to_you', payload)
 }
 

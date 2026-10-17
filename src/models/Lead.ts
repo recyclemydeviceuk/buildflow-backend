@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, Model } from 'mongoose'
+import { LEGACY_MEETING_STATUSES } from '../config/constants'
 
 export interface ILeadStatusNote {
   status: string
@@ -26,7 +27,7 @@ export interface ILead extends Document {
   city: string
   source: string
   disposition: string
-  meetingType?: 'VC' | 'Client Place' | null
+  meetingType?: 'Office Place' | 'Client Place' | null
   meetingLocation?: string | null
   failedReason?: string | null
   // Future Lead — the month the customer expects to be ready, as 'YYYY-MM'.
@@ -91,7 +92,7 @@ const LeadStatusNoteSchema = new Schema<ILeadStatusNote>(
   {
     status: {
       type: String,
-      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed'],
+      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Virtual Meeting Done', 'In-Person Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed', ...LEGACY_MEETING_STATUSES],
       required: true,
     },
     note: { type: String, required: true, trim: true },
@@ -125,10 +126,10 @@ const LeadSchema = new Schema<ILead>(
     source: { type: String, required: true },
     disposition: {
       type: String,
-      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed'],
+      enum: ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Virtual Meeting Done', 'In-Person Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed', ...LEGACY_MEETING_STATUSES],
       default: 'New',
     },
-    meetingType: { type: String, enum: ['VC', 'Client Place', null], default: null },
+    meetingType: { type: String, enum: ['Office Place', 'Client Place', 'VC', null], default: null },
     meetingLocation: { type: String, default: null, trim: true },
     failedReason: { type: String, default: null, trim: true },
     // 'YYYY-MM' — see ILead.expectedMonth
