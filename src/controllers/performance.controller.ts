@@ -132,10 +132,10 @@ export const getRepresentativesPerformance = async (req: Request, res: Response,
           Lead.countDocuments({ owner: repId, createdAt: { $gte: today } }),
           Lead.countDocuments({ owner: repId, createdAt: { $gte: weekAgo } }),
           Lead.countDocuments({ owner: repId, createdAt: { $gte: monthAgo } }),
-          Lead.countDocuments({ owner: repId, disposition: { $in: ['Contacted/Open', 'Interested', 'Qualified', 'Virtual Meeting Done', 'In-Person Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done'] } }),
+          Lead.countDocuments({ owner: repId, disposition: { $in: ['Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done'] } }),
           Lead.countDocuments({ owner: repId, disposition: 'Qualified' }),
-          Lead.countDocuments({ owner: repId, disposition: 'In-Person Meeting Done' }),
-          Lead.countDocuments({ owner: repId, disposition: 'Virtual Meeting Done' }),
+          Lead.countDocuments({ owner: repId, disposition: 'Visit Done' }),
+          Lead.countDocuments({ owner: repId, disposition: 'Meeting Done' }),
           Lead.countDocuments({ owner: repId, disposition: { $in: ['Booking Done', 'Agreement Done'] } }),
           Lead.countDocuments({ owner: repId, disposition: 'Failed' })
         ])

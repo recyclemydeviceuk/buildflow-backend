@@ -31,8 +31,8 @@ export const DISPOSITIONS = [
   'Contacted/Open',
   'Interested',
   'Qualified',
-  'Virtual Meeting Done',
-  'In-Person Meeting Done',
+  'Visit Done',
+  'Meeting Done',
   'Negotiation Done',
   'Booking Done',
   'Agreement Done',
@@ -40,15 +40,6 @@ export const DISPOSITIONS = [
   'Future',
   'Failed',
 ] as const
-
-export const VIRTUAL_MEETING_DONE = 'Virtual Meeting Done'
-export const IN_PERSON_MEETING_DONE = 'In-Person Meeting Done'
-// Replaced by the two meeting statuses above (Oct 2026). Still accepted by the
-// Lead schema so un-migrated documents keep saving; never offered as a choice.
-// See src/scripts/migrateMeetingStatuses.ts.
-export const LEGACY_VISIT_DONE = 'Visit Done'
-export const LEGACY_MEETING_DONE = 'Meeting Done'
-export const LEGACY_MEETING_STATUSES = [LEGACY_VISIT_DONE, LEGACY_MEETING_DONE]
 
 export const CALL_OUTCOMES = [
   'Connected',

@@ -4,7 +4,6 @@ import path from 'path'
 import mongoose from 'mongoose'
 import { S3_MEDIA_PREFIX } from '../config/constants'
 import { MediaFile, MediaKind } from '../models/MediaFile'
-import { Lead } from '../models/Lead'
 import {
   deleteFromS3,
   getPresignedDownloadUrl,
@@ -162,21 +161,13 @@ export const getMediaFiles = async (req: Request, res: Response, next: NextFunct
   }
 }
 
-// Files attached to a lead follow that lead's visibility: a rep may only open
-// attachments on leads assigned to them. Library files (lead: null) are shared.
-const canViewMediaFile = async (req: Request, doc: { lead?: unknown }): Promise<boolean> => {
-  if (req.user!.role === 'manager' || !doc.lead) return true
-  const lead = await Lead.findById(doc.lead).select('owner').lean()
-  return Boolean(lead?.owner) && String(lead!.owner) === String(req.user!.id)
-}
-
 export const getMediaFileById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ success: false, message: 'Invalid file id' })
     }
     const doc = await MediaFile.findById(req.params.id).lean()
-    if (!doc || !(await canViewMediaFile(req, doc))) {
+    if (!doc) {
       return res.status(404).json({ success: false, message: 'File not found' })
     }
     return res.status(200).json({ success: true, data: await serializeMediaFile(doc) })
@@ -194,7 +185,7 @@ export const getMediaDownloadUrl = async (req: Request, res: Response, next: Nex
       return res.status(400).json({ success: false, message: 'Invalid file id' })
     }
     const doc = await MediaFile.findById(req.params.id).lean()
-    if (!doc || !(await canViewMediaFile(req, doc))) {
+    if (!doc) {
       return res.status(404).json({ success: false, message: 'File not found' })
     }
 

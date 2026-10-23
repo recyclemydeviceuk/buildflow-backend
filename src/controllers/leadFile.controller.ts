@@ -17,9 +17,9 @@ const DOWNLOAD_URL_TTL_SECONDS = 60 * 60 // 1 hour
 
 const MAX_DESCRIPTION_LENGTH = 500
 
-// A rep may only view / attach files on a lead assigned to them (mirrors the
-// follow-up access rules). Managers always have access. Returns null when
-// access is granted, or an error tuple to send.
+// A rep may view / attach files on a lead they own OR on a lead that is not yet
+// assigned to anyone (mirrors the follow-up access rules). Managers always
+// have access. Returns null when access is granted, or an error tuple to send.
 const checkLeadAccess = (
   req: Request,
   lead: { owner?: unknown } | null
@@ -27,7 +27,8 @@ const checkLeadAccess = (
   if (!lead) return { status: 404, message: 'Lead not found' }
   if (req.user!.role === 'manager') return null
   const isOwner = Boolean(lead.owner) && String(lead.owner) === String(req.user!.id)
-  if (!isOwner) {
+  const isUnassigned = !lead.owner || String(lead.owner) === ''
+  if (!isOwner && !isUnassigned) {
     return { status: 403, message: 'Access denied' }
   }
   return null

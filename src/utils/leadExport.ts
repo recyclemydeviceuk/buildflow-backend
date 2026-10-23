@@ -47,10 +47,10 @@ export const EXPORTABLE_FIELDS: ExportableField[] = [
   // Computed columns derived from statusNotes — useful for re-targeting
   // failed leads that previously reached a visit / meeting milestone.
   { key: 'priorMilestones', label: 'Prior Milestones', milestoneOnly: true },
-  { key: 'visitDoneAt', label: 'In-Person Meeting Done At', milestoneOnly: true },
-  { key: 'visitDoneNote', label: 'In-Person Meeting Done Note', milestoneOnly: true },
-  { key: 'meetingDoneAt', label: 'Virtual Meeting Done At', milestoneOnly: true },
-  { key: 'meetingDoneNote', label: 'Virtual Meeting Done Note', milestoneOnly: true },
+  { key: 'visitDoneAt', label: 'Visit Done At', milestoneOnly: true },
+  { key: 'visitDoneNote', label: 'Visit Done Note', milestoneOnly: true },
+  { key: 'meetingDoneAt', label: 'Meeting Done At', milestoneOnly: true },
+  { key: 'meetingDoneNote', label: 'Meeting Done Note', milestoneOnly: true },
   { key: 'failedAt', label: 'Failed At', milestoneOnly: true },
   { key: 'failedNote', label: 'Failed Note', milestoneOnly: true },
 ]
@@ -161,8 +161,8 @@ export const buildLeadRow = (lead: any, fields: string[]): Record<string, any> =
 
   // Only walk statusNotes when a milestone column was actually requested.
   const wantsMilestones = needsStatusNotes(fields)
-  const visitDone = wantsMilestones ? latestNoteFor(lead, 'In-Person Meeting Done') : null
-  const meetingDone = wantsMilestones ? latestNoteFor(lead, 'Virtual Meeting Done') : null
+  const visitDone = wantsMilestones ? latestNoteFor(lead, 'Visit Done') : null
+  const meetingDone = wantsMilestones ? latestNoteFor(lead, 'Meeting Done') : null
   const failed = wantsMilestones ? latestNoteFor(lead, 'Failed') : null
 
   for (const field of fields) {
@@ -181,8 +181,8 @@ export const buildLeadRow = (lead: any, fields: string[]): Record<string, any> =
         break
       case 'priorMilestones': {
         const hits: string[] = []
-        if (visitDone) hits.push('In-Person Meeting Done')
-        if (meetingDone) hits.push('Virtual Meeting Done')
+        if (visitDone) hits.push('Visit Done')
+        if (meetingDone) hits.push('Meeting Done')
         row[field] = hits.join(', ')
         break
       }

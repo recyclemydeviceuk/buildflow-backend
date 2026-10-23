@@ -30,16 +30,9 @@ import { parseImportFile } from '../utils/csvParser'
 import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
 import { isValid, parse as parseDate, parseISO } from 'date-fns'
 
-const DISPOSITIONS = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Virtual Meeting Done', 'In-Person Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed']
+const DISPOSITIONS = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed']
 const FAILED_REASONS = ['Budget Issue', 'Not Interested', 'Location Issue', 'Timeline Issue', 'Competition', 'Not Responding', 'Not Enquired', 'Invalid Number', 'Other']
-// In-Person Meeting Done location. Virtual Meeting Done has no sub-type.
-const MEETING_TYPES = ['Office Place', 'Client Place']
-const resolveMeetingType = (value: unknown): string | null => {
-  const normalized = String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '')
-  if (normalized.startsWith('office')) return 'Office Place'
-  if (normalized.startsWith('client')) return 'Client Place'
-  return null
-}
+const MEETING_TYPES = ['VC', 'Client Place']
 type BulkLeadUpdatePayload = {
   source?: string
   disposition?: string
@@ -329,19 +322,12 @@ const resolveDisposition = (value?: string | null): string => {
     followup: 'Contacted/Open',
     followupdone: 'Contacted/Open',
     interested: 'Interested',
-    visitdone: 'In-Person Meeting Done',
-    visited: 'In-Person Meeting Done',
-    sitevisit: 'In-Person Meeting Done',
-    sitevisitdone: 'In-Person Meeting Done',
-    meetingdone: 'Virtual Meeting Done',
-    meeting: 'Virtual Meeting Done',
-    virtualmeetingdone: 'Virtual Meeting Done',
-    virtualmeeting: 'Virtual Meeting Done',
-    vcdone: 'Virtual Meeting Done',
-    inpersonmeetingdone: 'In-Person Meeting Done',
-    inpersonmeeting: 'In-Person Meeting Done',
-    officevisit: 'In-Person Meeting Done',
-    officevisitdone: 'In-Person Meeting Done',
+    visitdone: 'Visit Done',
+    visited: 'Visit Done',
+    sitevisit: 'Visit Done',
+    sitevisitdone: 'Visit Done',
+    meetingdone: 'Meeting Done',
+    meeting: 'Meeting Done',
     negotiationdone: 'Negotiation Done',
     negotiation: 'Negotiation Done',
     bookingdone: 'Booking Done',
@@ -954,8 +940,8 @@ export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFun
 
     if (bulkPayload.owner !== undefined) {
       await QueueItem.deleteMany({ leadId: { $in: accessibleLeads.map((lead) => lead._id) } })
-      // Managers-only: reps must not see who was assigned/transferred what.
-      emitToTeam('managers', 'lead:assigned', {
+      // Team-wide ping so manager dashboards & every list refresh.
+      emitToTeam('all', 'lead:assigned', {
         leadIds: updatedIds,
         assignedTo: bulkPayload.owner || null,
         assignedToName: bulkPayload.ownerName || null,
@@ -1232,7 +1218,7 @@ export const importLeadsFromFile = async (req: Request, res: Response, next: Nex
       const dispositionValue = resolveDisposition(mappedValues.disposition)
       const sourceValue = resolveSource(mappedValues.source)
       const meetingTypeValue = hasMeaningfulValue(mappedValues.meetingType)
-        ? resolveMeetingType(mappedValues.meetingType)
+        ? (MEETING_TYPES.find((t) => normalizeComparator(t) === normalizeComparator(String(mappedValues.meetingType))) || null)
         : null
       const meetingLocationValue = hasMeaningfulValue(mappedValues.meetingLocation) ? String(mappedValues.meetingLocation).trim() : null
       const failedReasonValue = hasMeaningfulValue(mappedValues.failedReason) ? String(mappedValues.failedReason).trim() : null
@@ -1287,14 +1273,6 @@ export const importLeadsFromFile = async (req: Request, res: Response, next: Nex
       }).sort({ updatedAt: -1 })
 
       if (existingLead && duplicateHandling === 'skip') {
-        skippedCount += 1
-        errors.push({ row: rowNumber, message: 'Lead with this phone number already exists' })
-        continue
-      }
-
-      // A rep may only overwrite a lead already assigned to them — never take
-      // over an unassigned lead or another rep's lead through an import.
-      if (existingLead && duplicateHandling === 'overwrite' && !canAccessLead(req, existingLead)) {
         skippedCount += 1
         errors.push({ row: rowNumber, message: 'Lead with this phone number already exists' })
         continue
@@ -1505,11 +1483,6 @@ export const getFollowUpCounts = async (req: Request, res: Response, next: NextF
     } else if (ownerIds.length > 0 && countsIncludeUnassigned) {
       baseFilter.$or = [{ owner: null }, { owner: { $in: ownerIds } }]
     }
-    // Representatives only count their own leads, whatever owner they ask for.
-    if (req.user!.role === 'representative') {
-      delete baseFilter.$or
-      baseFilter.owner = new mongoose.Types.ObjectId(req.user!.id)
-    }
     const notTerminal = { disposition: { $nin: TERMINAL_DISPOSITIONS } }
 
     const [all, withFollowUp, without, overdue, today, tomorrow, thisWeek] = await Promise.all([
@@ -1676,7 +1649,7 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
     const normalizedDateTo = String(dateTo || '').trim()
 
     // Multi-select support: every filter param can now arrive as a single
-    // value ("New") or comma-separated list ("New,Qualified,In-Person Meeting Done").
+    // value ("New") or comma-separated list ("New,Qualified,Visit Done").
     // We keep the original param name for backwards compatibility — older
     // callers passing a single value still hit the same code path.
     const parseList = (raw: string): string[] =>
@@ -1856,12 +1829,9 @@ export const getLeads = async (req: Request, res: Response, next: NextFunction) 
       }
     }
 
-    // Representatives only ever see leads assigned to them — never unassigned
-    // leads or another rep's leads. Any owner filter they send is narrowed to
-    // their own id (an $and owner clause above still intersects correctly).
-    if (req.user!.role === 'representative') {
-      filter.owner = new mongoose.Types.ObjectId(req.user!.id)
-    }
+    // Representatives now see ALL leads (read-only for leads they don't own).
+    // Write operations (update, assign, delete) still require canAccessLead.
+    // If the rep passed owner=myId it still filters correctly; we just don't force it.
 
     const pageNum = Math.max(1, parseInt(page))
     const limitNum = Math.min(100, parseInt(limit))
@@ -1905,11 +1875,8 @@ export const getLeadById = async (req: Request, res: Response, next: NextFunctio
     if (!lead) {
       return res.status(404).json({ success: false, message: 'Lead not found' })
     }
-    // Managers can view any lead; representatives only leads assigned to them.
-    // 404 (not 403) so a rep can't probe which lead ids exist.
-    if (!canAccessLead(req, lead)) {
-      return res.status(404).json({ success: false, message: 'Lead not found' })
-    }
+    // Any authenticated user can VIEW any lead.
+    // Edit/delete/assign operations enforce ownership via canAccessLead.
     return res.status(200).json({ success: true, data: lead })
   } catch (err) {
     next(err)
@@ -1949,18 +1916,15 @@ export const createLead = async (req: Request, res: Response, next: NextFunction
           message: existingLead.phone === normalizedPhone || existingLead.phone.endsWith(normalizedPhone)
             ? 'Lead already exists for this phone number'
             : 'Lead already exists — this number is the alternate phone of an existing lead',
-          // Reps only get the existing lead's details when it is theirs.
-          data: canAccessLead(req, existingLead)
-            ? {
-                _id: String(existingLead._id),
-                name: existingLead.name,
-                phone: existingLead.phone,
-                alternatePhone: existingLead.alternatePhone || null,
-                city: existingLead.city,
-                source: existingLead.source,
-                disposition: existingLead.disposition,
-              }
-            : null,
+          data: {
+            _id: String(existingLead._id),
+            name: existingLead.name,
+            phone: existingLead.phone,
+            alternatePhone: existingLead.alternatePhone || null,
+            city: existingLead.city,
+            source: existingLead.source,
+            disposition: existingLead.disposition,
+          },
         })
       }
     }
@@ -2312,7 +2276,7 @@ export const assignLead = async (req: Request, res: Response, next: NextFunction
       })
     } else {
       // Unassign: team needs to know, but there's no per-user recipient.
-      emitToTeam('managers', 'lead:assigned', {
+      emitToTeam('all', 'lead:assigned', {
         leadId: String(lead!._id),
         leadName: lead!.name,
         assignedTo: null,
@@ -2414,7 +2378,7 @@ export const respondToAssignment = async (req: Request, res: Response, next: Nex
       metadata: { transferSource: 'declined' },
     }).catch(() => null)
 
-    emitToTeam('managers', 'lead:assigned', {
+    emitToTeam('all', 'lead:assigned', {
       leadId: String(lead._id),
       leadName: lead.name,
       assignedTo: null,
@@ -2881,13 +2845,13 @@ export const exportLeads = async (req: Request, res: Response, next: NextFunctio
     }
 
     // Prior-milestone filter — narrows to Failed leads whose status history
-    // includes at least one In-Person Meeting Done OR Virtual Meeting Done entry. These are the
+    // includes at least one Visit Done OR Meeting Done entry. These are the
     // most valuable failed leads to re-target: someone already invested time
     // walking the site or doing the video call before things fell apart.
     if (priorMilestoneOnly) {
       query.disposition = 'Failed'
       query.statusNotes = {
-        $elemMatch: { status: { $in: ['Virtual Meeting Done', 'In-Person Meeting Done'] } },
+        $elemMatch: { status: { $in: ['Visit Done', 'Meeting Done'] } },
       }
     }
 
@@ -2954,9 +2918,12 @@ export const getLeadFollowUps = async (req: Request, res: Response, next: NextFu
     }
 
     // Access control for representatives
-    // (owner only — unassigned leads are not visible to reps)
-    if (!canAccessLead(req, lead)) {
-      return res.status(403).json({ success: false, message: 'Access denied' })
+    if (req.user!.role === 'representative') {
+      const isOwner = lead.owner && String(lead.owner) === String(req.user!.id)
+      const isUnassigned = !lead.owner || String(lead.owner) === ''
+      if (!isOwner && !isUnassigned) {
+        return res.status(403).json({ success: false, message: 'Access denied' })
+      }
     }
 
     const followUps = await FollowUp.find({ lead: new mongoose.Types.ObjectId(id) })
@@ -2997,9 +2964,12 @@ export const createFollowUp = async (req: Request, res: Response, next: NextFunc
     }
 
     // Access control for representatives
-    // (owner only — unassigned leads are not visible to reps)
-    if (!canAccessLead(req, lead)) {
-      return res.status(403).json({ success: false, message: 'Access denied' })
+    if (req.user!.role === 'representative') {
+      const isOwner = lead.owner && String(lead.owner) === String(req.user!.id)
+      const isUnassigned = !lead.owner || String(lead.owner) === ''
+      if (!isOwner && !isUnassigned) {
+        return res.status(403).json({ success: false, message: 'Access denied' })
+      }
     }
 
     const followUp = await FollowUp.create({

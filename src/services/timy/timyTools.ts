@@ -230,7 +230,7 @@ const tools: Record<string, Tool> = {
     declaration: {
       name: 'count_leads_by_disposition',
       description:
-        'Count leads grouped by disposition (e.g. New, Contacted/Open, In-Person Meeting Done, Booking Done). Use this for pipeline overview questions.',
+        'Count leads grouped by disposition (e.g. New, Contacted/Open, Visit Done, Booking Done). Use this for pipeline overview questions.',
       parameters: {
         type: 'object',
         properties: {
@@ -538,7 +538,7 @@ const tools: Record<string, Tool> = {
           disposition: {
             type: 'string',
             description:
-              'One of: New, Contacted/Open, Interested, Qualified, Virtual Meeting Done, In-Person Meeting Done, Negotiation Done, Booking Done, Agreement Done, Prospect, Failed.',
+              'One of: New, Contacted/Open, Interested, Qualified, Visit Done, Meeting Done, Negotiation Done, Booking Done, Agreement Done, Prospect, Failed.',
           },
           note: { type: 'string', description: 'Why is the disposition changing? (1–2 sentences)' },
         },
@@ -663,7 +663,7 @@ const tools: Record<string, Tool> = {
           after: afterObject,
           metadata: { transferSource: 'assistant' },
         })
-        emitToTeam('managers', 'lead:unassigned', { leadId: String(lead._id) })
+        emitToTeam('all', 'lead:unassigned', { leadId: String(lead._id) })
         return { success: true, leadId: String(lead._id), assignedTo: null }
       }
       if (!isValidObjectId(targetId)) return { error: 'Invalid targetUserId.' }
@@ -690,7 +690,7 @@ const tools: Record<string, Tool> = {
       })
       // Mirror the existing controller's socket pattern so the rep's
       // "New Lead Assigned" popup fires.
-      emitToTeam('managers', 'lead:assigned', {
+      emitToTeam('all', 'lead:assigned', {
         leadId: String(lead._id),
         leadName: lead.name,
         assignedTo: String(rep._id),
@@ -1023,7 +1023,7 @@ export const buildTimySystemPrompt = (ctx: TimyContext): string => {
     '- For any disposition change, the update_lead_disposition tool requires a short note. If the user didn\'t volunteer one, ask once ("What note should I attach?") then proceed with their answer.',
     '- For phone numbers and dates, repeat back what you heard before creating ("So that\'s 9-8-7-6-5-4-3-2-1-0, correct?") because the model can mishear digits over voice.',
     '- ISO timestamps for schedule_followup must be in the user\'s local time with the +05:30 offset (Indian Standard Time). Resolve "tomorrow at 3 pm" → 2026-04-28T15:00:00+05:30 yourself.',
-    '- After a successful action, briefly confirm the change ("Done — Mahesh\'s lead is now In-Person Meeting Done. Note saved."). Do NOT read back the raw tool output.',
+    '- After a successful action, briefly confirm the change ("Done — Mahesh\'s lead is now Visit Done. Note saved."). Do NOT read back the raw tool output.',
     '- If a tool returns an `error`, paraphrase it in plain language and offer next steps. Never claim something happened if a tool reported an error.',
     `${ctx.isDemo ? '- This is a DEMO account: every write tool will refuse with an error. If the user asks for an action, politely tell them this account is view-only.\n' : ''}`,
     'Conversation style:',
