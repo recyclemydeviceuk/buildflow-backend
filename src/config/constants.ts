@@ -26,10 +26,12 @@ export const ROLES = {
 
 export const LEAD_SOURCES = ['Direct', 'Manual', 'Meta', 'Website', 'Google ADS'] as const
 
+// Statuses a lead can be moved to. 'Visit Done' is shown to users as
+// "Virtual Meeting" (Oct 2026) but keeps its stored value, so existing leads,
+// filters, exports and undo history needed no data migration.
 export const DISPOSITIONS = [
   'New',
   'Contacted/Open',
-  'Interested',
   'Qualified',
   'Visit Done',
   'Meeting Done',
@@ -40,6 +42,35 @@ export const DISPOSITIONS = [
   'Future',
   'Failed',
 ] as const
+
+// Retired statuses (Interested was removed in Oct 2026). Leads, status notes
+// and undo history that already hold them stay valid so nothing is lost and
+// existing leads keep saving, but they are never offered as a choice and a
+// lead can't be moved into them.
+export const LEGACY_DISPOSITIONS = ['Interested'] as const
+
+// Every value Lead.disposition and statusNotes.status may hold.
+export const STORED_DISPOSITIONS = [...DISPOSITIONS, ...LEGACY_DISPOSITIONS] as const
+
+export const isActiveDisposition = (value: unknown): value is string =>
+  typeof value === 'string' && (DISPOSITIONS as readonly string[]).includes(value)
+
+export const isStoredDisposition = (value: unknown): value is string =>
+  typeof value === 'string' && (STORED_DISPOSITIONS as readonly string[]).includes(value)
+
+// User-facing names that differ from the stored value.
+export const DISPOSITION_LABELS: Record<string, string> = {
+  'Visit Done': 'Virtual Meeting',
+}
+
+export const dispositionLabel = (value: string | null | undefined): string =>
+  (value && DISPOSITION_LABELS[value]) || value || ''
+
+// Where a "Meeting Done" meeting took place. 'VC' was the old virtual option;
+// virtual meetings are now the "Virtual Meeting" status, so VC is only kept
+// valid for leads that already have it.
+export const MEETING_TYPES = ['Client Place', 'Office Place'] as const
+export const LEGACY_MEETING_TYPES = ['VC'] as const
 
 export const CALL_OUTCOMES = [
   'Connected',

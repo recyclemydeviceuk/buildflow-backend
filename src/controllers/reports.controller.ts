@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express'
 import { Lead } from '../models/Lead'
 import { Call } from '../models/Call'
+import { dispositionLabel } from '../config/constants'
 
 const buildDateFilter = (dateFrom?: string, dateTo?: string) => {
   if (!dateFrom && !dateTo) return {}
@@ -122,7 +123,8 @@ export const exportLeadsCSV = async (req: Request, res: Response, next: NextFunc
 
     const rows = leads.map((lead) =>
       headers.map((h) => {
-        const val = (lead as Record<string, unknown>)[h]
+        const raw = (lead as Record<string, unknown>)[h]
+        const val = h === 'disposition' ? dispositionLabel(raw as string) : raw
         if (val === null || val === undefined) return ''
         if (val instanceof Date) return val.toISOString()
         return String(val).replace(/,/g, ' ')

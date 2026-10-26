@@ -6,6 +6,12 @@ import { User } from '../models/User'
 import { Settings } from '../models/Settings'
 import { refreshReminderStatuses } from '../services/reminder.service'
 import { normalizeFeatureControls } from '../utils/featureControls'
+import { LEGACY_DISPOSITIONS } from '../config/constants'
+
+// Retired statuses (Interested) stay in the funnel only while some lead
+// still holds them, so those leads are never silently dropped from totals.
+const isShownStage = (row: { stage: string; count: number }): boolean =>
+  row.count > 0 || !(LEGACY_DISPOSITIONS as readonly string[]).includes(row.stage)
 
 const startOfDay = (date: Date) => {
   const value = new Date(date)
@@ -587,7 +593,9 @@ export const getManagerDashboard = async (req: Request, res: Response, next: Nex
     // Build funnel
     const funnelOrder = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done']
     const funnelMap = new Map(pipelineFunnel.map((d: any) => [d._id, d.count]))
-    const funnel = funnelOrder.map((stage) => ({ stage, count: (funnelMap.get(stage) || 0) as number }))
+    const funnel = funnelOrder
+      .map((stage) => ({ stage, count: (funnelMap.get(stage) || 0) as number }))
+      .filter(isShownStage)
 
     // Build rep leaderboard
     const leadMap = new Map(repLeadStats.map((r: any) => [String(r._id), r]))
@@ -823,10 +831,12 @@ export const getConversionFunnel = async (req: Request, res: Response, next: Nex
     const funnelMap: Record<string, number> = {}
     result.forEach((r) => { funnelMap[r._id] = r.count })
 
-    const funnel = stages.map((stage) => ({
-      stage,
-      count: funnelMap[stage] || 0,
-    }))
+    const funnel = stages
+      .map((stage) => ({
+        stage,
+        count: funnelMap[stage] || 0,
+      }))
+      .filter(isShownStage)
 
     return res.status(200).json({ success: true, data: funnel })
   } catch (err) {

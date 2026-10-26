@@ -5,6 +5,7 @@
  * exact columns a CSV ends up with) can be exercised without a database or an
  * HTTP request.
  */
+import { dispositionLabel } from '../config/constants'
 
 export interface ExportableField {
   key: string
@@ -47,8 +48,9 @@ export const EXPORTABLE_FIELDS: ExportableField[] = [
   // Computed columns derived from statusNotes — useful for re-targeting
   // failed leads that previously reached a visit / meeting milestone.
   { key: 'priorMilestones', label: 'Prior Milestones', milestoneOnly: true },
-  { key: 'visitDoneAt', label: 'Visit Done At', milestoneOnly: true },
-  { key: 'visitDoneNote', label: 'Visit Done Note', milestoneOnly: true },
+  // 'Visit Done' is shown to users as "Virtual Meeting"; the keys stay put.
+  { key: 'visitDoneAt', label: 'Virtual Meeting At', milestoneOnly: true },
+  { key: 'visitDoneNote', label: 'Virtual Meeting Note', milestoneOnly: true },
   { key: 'meetingDoneAt', label: 'Meeting Done At', milestoneOnly: true },
   { key: 'meetingDoneNote', label: 'Meeting Done Note', milestoneOnly: true },
   { key: 'failedAt', label: 'Failed At', milestoneOnly: true },
@@ -181,11 +183,14 @@ export const buildLeadRow = (lead: any, fields: string[]): Record<string, any> =
         break
       case 'priorMilestones': {
         const hits: string[] = []
-        if (visitDone) hits.push('Visit Done')
+        if (visitDone) hits.push(dispositionLabel('Visit Done'))
         if (meetingDone) hits.push('Meeting Done')
         row[field] = hits.join(', ')
         break
       }
+      case 'disposition':
+        row[field] = dispositionLabel(lead.disposition)
+        break
       case 'visitDoneNote':
         row[field] = visitDone?.note || ''
         break

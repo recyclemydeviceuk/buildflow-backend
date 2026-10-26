@@ -1,4 +1,4 @@
-import { DISPOSITIONS } from '../config/constants'
+import { isStoredDisposition } from '../config/constants'
 
 /** 'YYYY-MM' — the only shape accepted for Lead.expectedMonth. */
 export const EXPECTED_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/
@@ -11,8 +11,8 @@ type UndoableLead = {
   statusNotes?: Array<{ status?: string | null }> | null
 }
 
-const isKnownDisposition = (value: unknown): value is string =>
-  typeof value === 'string' && (DISPOSITIONS as readonly string[]).includes(value)
+// Retired statuses count too: undo restores exactly what the lead had.
+const isKnownDisposition = isStoredDisposition
 
 /**
  * Where an "Undo" would take a lead. Prefers the explicit dispositionHistory

@@ -11,7 +11,16 @@ import { Call } from '../models/Call'
 import { FollowUp } from '../models/FollowUp'
 import { DeletedLeadPhone } from '../models/DeletedLeadPhone'
 import { DeletedLeadExternalId } from '../models/DeletedLeadExternalId'
-import { LEAD_SOURCES } from '../config/constants'
+import {
+  DISPOSITIONS,
+  LEAD_SOURCES,
+  LEGACY_DISPOSITIONS,
+  LEGACY_MEETING_TYPES,
+  MEETING_TYPES,
+  dispositionLabel,
+  isActiveDisposition,
+  isStoredDisposition,
+} from '../config/constants'
 import { Settings } from '../models/Settings'
 import { sendLeadAssignedEmail } from '../services/ses.service'
 import { notifyNewLeadCreated } from '../services/notification.service'
@@ -30,9 +39,8 @@ import { parseImportFile } from '../utils/csvParser'
 import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
 import { isValid, parse as parseDate, parseISO } from 'date-fns'
 
-const DISPOSITIONS = ['New', 'Contacted/Open', 'Interested', 'Qualified', 'Visit Done', 'Meeting Done', 'Negotiation Done', 'Booking Done', 'Agreement Done', 'Prospect', 'Future', 'Failed']
+const ALLOWED_STATUS_MESSAGE = `Valid status is required. Allowed: ${DISPOSITIONS.map(dispositionLabel).join(', ')}`
 const FAILED_REASONS = ['Budget Issue', 'Not Interested', 'Location Issue', 'Timeline Issue', 'Competition', 'Not Responding', 'Not Enquired', 'Invalid Number', 'Other']
-const MEETING_TYPES = ['VC', 'Client Place']
 type BulkLeadUpdatePayload = {
   source?: string
   disposition?: string
@@ -326,6 +334,12 @@ const resolveDisposition = (value?: string | null): string => {
     visited: 'Visit Done',
     sitevisit: 'Visit Done',
     sitevisitdone: 'Visit Done',
+    // 'Visit Done' is displayed (and exported) as "Virtual Meeting".
+    virtualmeeting: 'Visit Done',
+    virtualmeetingdone: 'Visit Done',
+    vc: 'Visit Done',
+    vcdone: 'Visit Done',
+    videocall: 'Visit Done',
     meetingdone: 'Meeting Done',
     meeting: 'Meeting Done',
     negotiationdone: 'Negotiation Done',
@@ -353,12 +367,31 @@ const resolveDisposition = (value?: string | null): string => {
   }
   const aliasedDisposition = aliases[normalizedValue]
   if (aliasedDisposition) return aliasedDisposition
-  const matchedDisposition = DISPOSITIONS.find(
+  const matchedDisposition = [...DISPOSITIONS, ...LEGACY_DISPOSITIONS].find(
     (disposition) => normalizeComparator(disposition) === normalizedValue
   )
 
   return matchedDisposition || 'New'
 }
+
+// Imports may only put a lead in a status that is still offered. Rows that
+// carry a retired status ("Interested") land in Contacted/Open.
+const resolveImportDisposition = (value?: string | null): string => {
+  const resolved = resolveDisposition(value)
+  return isActiveDisposition(resolved) ? resolved : 'Contacted/Open'
+}
+
+const resolveMeetingType = (value: unknown): string | null => {
+  const normalized = normalizeComparator(String(value || ''))
+  if (normalized.startsWith('client')) return 'Client Place'
+  if (normalized.startsWith('office')) return 'Office Place'
+  // Older sheets may still say VC — kept as-is so the import loses nothing.
+  if (normalized === 'vc' || normalized.startsWith('virtual') || normalized.startsWith('video')) return 'VC'
+  return null
+}
+
+const isValidMeetingType = (value: unknown): boolean =>
+  value === null || ([...MEETING_TYPES, ...LEGACY_MEETING_TYPES] as readonly unknown[]).includes(value)
 
 const resolveSource = (value?: string | null): string => {
   if (!value) return 'Manual'
@@ -850,7 +883,7 @@ export const bulkUpdateLeads = async (req: Request, res: Response, next: NextFun
     }
 
     const bulkPayload: BulkLeadUpdatePayload = {}
-    const nextDisposition = req.body?.disposition && DISPOSITIONS.includes(req.body.disposition)
+    const nextDisposition = isActiveDisposition(req.body?.disposition)
       ? req.body.disposition
       : undefined
     const nextSource = typeof req.body?.source === 'string' && req.body.source.trim()
@@ -1215,10 +1248,10 @@ export const importLeadsFromFile = async (req: Request, res: Response, next: Nex
       seenPhones.set(normalizedPhone, rowNumber)
 
       const noteValue = hasMeaningfulValue(mappedValues.notes) ? String(mappedValues.notes).trim() : ''
-      const dispositionValue = resolveDisposition(mappedValues.disposition)
+      const dispositionValue = resolveImportDisposition(mappedValues.disposition)
       const sourceValue = resolveSource(mappedValues.source)
       const meetingTypeValue = hasMeaningfulValue(mappedValues.meetingType)
-        ? (MEETING_TYPES.find((t) => normalizeComparator(t) === normalizeComparator(String(mappedValues.meetingType))) || null)
+        ? resolveMeetingType(mappedValues.meetingType)
         : null
       const meetingLocationValue = hasMeaningfulValue(mappedValues.meetingLocation) ? String(mappedValues.meetingLocation).trim() : null
       const failedReasonValue = hasMeaningfulValue(mappedValues.failedReason) ? String(mappedValues.failedReason).trim() : null
@@ -1526,11 +1559,12 @@ export const getFollowUpCounts = async (req: Request, res: Response, next: NextF
 
 export const getLeadFilters = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const [dbCities, dbSources, settings, owners] = await Promise.all([
+    const [dbCities, dbSources, settings, owners, legacyDispositionsInUse] = await Promise.all([
       Lead.distinct('city'),
       Lead.distinct('source'),
       Settings.findOne({}, 'cities sources'),
       User.find({ role: 'representative', isActive: true }, 'name _id').sort({ name: 1 }),
+      Lead.distinct('disposition', { disposition: { $in: [...LEGACY_DISPOSITIONS] } }),
     ])
 
     // If settings has configured cities, use those. Otherwise fallback to distinct cities from DB.
@@ -1555,6 +1589,9 @@ export const getLeadFilters = async (req: Request, res: Response, next: NextFunc
         cities: citiesToReturn.sort(),
         sources: allSources,
         dispositions: DISPOSITIONS,
+        // Retired statuses some leads still hold — offered only as a list
+        // filter so those leads can be found and moved on.
+        legacyDispositions: LEGACY_DISPOSITIONS.filter((d) => legacyDispositionsInUse.includes(d)),
         owners: owners.map(o => ({ id: String(o._id), name: o.name })),
         leadFields: normalizeLeadFields(settings?.leadFields),
       },
@@ -1886,7 +1923,7 @@ export const getLeadById = async (req: Request, res: Response, next: NextFunctio
 export const createLead = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const initialNote = typeof req.body.notes === 'string' ? req.body.notes.trim() : ''
-    const initialDisposition = req.body.disposition && DISPOSITIONS.includes(req.body.disposition) ? req.body.disposition : 'New'
+    const initialDisposition = isActiveDisposition(req.body.disposition) ? req.body.disposition : 'New'
     const resolvedSource = resolveSource(req.body.source)
     const normalizedPhone = normalizePhone(req.body.phone)
     let createdAt: Date | undefined
@@ -2022,6 +2059,20 @@ export const updateLead = async (req: Request, res: Response, next: NextFunction
           message: error instanceof Error ? error.message : 'Created at date and time is invalid',
         })
       }
+    }
+
+    // These are written with a raw update (no schema validation), so reject
+    // values the Lead schema would refuse — a later lead.save() (e.g. the
+    // Exotel call webhook) would otherwise fail on this lead.
+    if (updates.meetingType !== undefined && !isValidMeetingType(updates.meetingType)) {
+      return res.status(400).json({ success: false, message: `Meeting place must be one of: ${MEETING_TYPES.join(', ')}` })
+    }
+    if (
+      updates.disposition !== undefined &&
+      !isActiveDisposition(updates.disposition) &&
+      updates.disposition !== existing.disposition
+    ) {
+      return res.status(400).json({ success: false, message: ALLOWED_STATUS_MESSAGE })
     }
 
     if (updates.expectedMonth !== undefined && updates.expectedMonth !== null) {
@@ -2402,8 +2453,11 @@ export const updateDisposition = async (req: Request, res: Response, next: NextF
       return res.status(403).json({ success: false, message: 'You do not have access to update this lead' })
     }
 
-    if (!disposition || !DISPOSITIONS.includes(disposition)) {
-      return res.status(400).json({ success: false, message: `Valid status is required. Allowed: ${DISPOSITIONS.join(', ')}` })
+    // A retired status (Interested) can stay on a lead that already has it,
+    // but no lead can be moved into it.
+    const keepsCurrentStatus = disposition === existing.disposition && isStoredDisposition(disposition)
+    if (!isActiveDisposition(disposition) && !keepsCurrentStatus) {
+      return res.status(400).json({ success: false, message: ALLOWED_STATUS_MESSAGE })
     }
 
     const before = existing.toObject()
@@ -2521,8 +2575,8 @@ export const undoDisposition = async (req: Request, res: Response, next: NextFun
     const from = existing.disposition
     const reason = typeof req.body?.notes === 'string' ? req.body.notes.trim() : ''
     const note = reason
-      ? `Undo: status reverted from ${from} to ${target.to} — ${reason}`
-      : `Undo: status reverted from ${from} to ${target.to}`
+      ? `Undo: status reverted from ${dispositionLabel(from)} to ${dispositionLabel(target.to)} — ${reason}`
+      : `Undo: status reverted from ${dispositionLabel(from)} to ${dispositionLabel(target.to)}`
 
     const update: Record<string, unknown> = {
       $set: {
@@ -2562,8 +2616,9 @@ export const addStatusNote = async (req: Request, res: Response, next: NextFunct
     const { status, note } = req.body
     const trimmedNote = typeof note === 'string' ? note.trim() : ''
 
-    if (!status || !DISPOSITIONS.includes(status)) {
-      return res.status(400).json({ success: false, message: `Valid status is required. Allowed: ${DISPOSITIONS.join(', ')}` })
+    // Any stored status — notes filed under a retired status stay editable.
+    if (!isStoredDisposition(status)) {
+      return res.status(400).json({ success: false, message: ALLOWED_STATUS_MESSAGE })
     }
 
     if (!trimmedNote) {
@@ -2621,8 +2676,9 @@ export const updateStatusNote = async (req: Request, res: Response, next: NextFu
     const { status, note } = req.body
     const trimmedNote = typeof note === 'string' ? note.trim() : ''
 
-    if (!status || !DISPOSITIONS.includes(status)) {
-      return res.status(400).json({ success: false, message: `Valid status is required. Allowed: ${DISPOSITIONS.join(', ')}` })
+    // Any stored status — notes filed under a retired status stay editable.
+    if (!isStoredDisposition(status)) {
+      return res.status(400).json({ success: false, message: ALLOWED_STATUS_MESSAGE })
     }
 
     if (!trimmedNote) {

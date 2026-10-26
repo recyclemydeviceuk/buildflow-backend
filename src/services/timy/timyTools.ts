@@ -22,8 +22,21 @@ import { Call } from '../../models/Call'
 import { AuditLog } from '../../models/AuditLog'
 import { emitToTeam } from '../../config/socket'
 import { logger } from '../../utils/logger'
-import { DISPOSITIONS } from '../../config/constants'
+import { DISPOSITION_LABELS, DISPOSITIONS, dispositionLabel, isActiveDisposition } from '../../config/constants'
 import { getLeadOwnershipAction } from '../../utils/leadTransferHistory'
+
+// Timy speaks in display names ("Virtual Meeting"), so accept either the
+// display name or the stored value and return the stored value — or null when
+// it isn't a status a lead can be moved to (e.g. the retired "Interested").
+const toStoredDisposition = (input: unknown): string | null => {
+  const wanted = String(input || '').trim().toLowerCase()
+  if (!wanted) return null
+  const byLabel = Object.keys(DISPOSITION_LABELS).find((value) => DISPOSITION_LABELS[value].toLowerCase() === wanted)
+  const candidate = byLabel || DISPOSITIONS.find((value) => value.toLowerCase() === wanted)
+  return isActiveDisposition(candidate) ? candidate : null
+}
+
+const DISPOSITION_CHOICES = DISPOSITIONS.map(dispositionLabel).join(', ')
 
 export interface TimyContext {
   userId: string
@@ -182,7 +195,7 @@ const tools: Record<string, Tool> = {
           name: l.name,
           phone: l.phone,
           city: l.city,
-          disposition: l.disposition,
+          disposition: dispositionLabel(l.disposition),
           source: l.source,
           ownerId: l.owner ? String(l.owner) : null,
           owner: l.ownerName,
@@ -213,7 +226,7 @@ const tools: Record<string, Tool> = {
       const days = Math.min(Math.max(Number(args?.days) || 7, 1), 90)
       const since = new Date(Date.now() - days * 86400 * 1000)
       const filter: any = { createdAt: { $gte: since } }
-      if (args?.disposition) filter.disposition = String(args.disposition)
+      if (args?.disposition) filter.disposition = toStoredDisposition(args.disposition) || String(args.disposition)
       const leads = await Lead.find(ownerScope(ctx, filter))
         .sort({ createdAt: -1 })
         .limit(limit)
@@ -221,7 +234,7 @@ const tools: Record<string, Tool> = {
         .lean()
       return {
         count: leads.length,
-        leads: leads.map((l) => ({ leadId: String(l._id), ...l, _id: undefined })),
+        leads: leads.map((l) => ({ leadId: String(l._id), ...l, disposition: dispositionLabel(l.disposition), _id: undefined })),
       }
     },
   },
@@ -230,7 +243,7 @@ const tools: Record<string, Tool> = {
     declaration: {
       name: 'count_leads_by_disposition',
       description:
-        'Count leads grouped by disposition (e.g. New, Contacted/Open, Visit Done, Booking Done). Use this for pipeline overview questions.',
+        'Count leads grouped by disposition (e.g. New, Contacted/Open, Virtual Meeting, Booking Done). Use this for pipeline overview questions.',
       parameters: {
         type: 'object',
         properties: {
@@ -252,7 +265,7 @@ const tools: Record<string, Tool> = {
       ])
       return {
         total: rows.reduce((a, r) => a + r.count, 0),
-        byDisposition: rows.map((r) => ({ disposition: r._id, count: r.count })),
+        byDisposition: rows.map((r) => ({ disposition: dispositionLabel(r._id), count: r.count })),
       }
     },
   },
@@ -480,7 +493,7 @@ const tools: Record<string, Tool> = {
           },
           disposition: {
             type: 'string',
-            description: 'Initial disposition. Must be one of the supported names; defaults to "New".',
+            description: `Initial disposition. One of: ${DISPOSITION_CHOICES}. Defaults to "New".`,
           },
           notes: { type: 'string', description: 'Free-form notes' },
         },
@@ -495,7 +508,7 @@ const tools: Record<string, Tool> = {
       if (rawPhone.length < 10) return { error: 'Phone must be at least 10 digits.' }
       const phone = rawPhone.length > 10 ? rawPhone.slice(-10) : rawPhone
 
-      const disposition = DISPOSITIONS.includes(args?.disposition) ? args.disposition : 'New'
+      const disposition = toStoredDisposition(args?.disposition) || 'New'
       const city = String(args?.city || 'Bangalore').trim()
       const source = ['Direct', 'Manual', 'Meta', 'Website', 'Google ADS'].includes(args?.source)
         ? args.source
@@ -520,7 +533,7 @@ const tools: Record<string, Tool> = {
         leadId: String(created._id),
         name: created.name,
         phone: created.phone,
-        disposition: created.disposition,
+        disposition: dispositionLabel(created.disposition),
         owner: created.ownerName,
       }
     },
@@ -537,8 +550,7 @@ const tools: Record<string, Tool> = {
           leadId: { type: 'string', description: 'Lead ObjectId from find_lead' },
           disposition: {
             type: 'string',
-            description:
-              'One of: New, Contacted/Open, Interested, Qualified, Visit Done, Meeting Done, Negotiation Done, Booking Done, Agreement Done, Prospect, Failed.',
+            description: `One of: ${DISPOSITION_CHOICES}.`,
           },
           note: { type: 'string', description: 'Why is the disposition changing? (1–2 sentences)' },
         },
@@ -547,9 +559,9 @@ const tools: Record<string, Tool> = {
     },
     mutating: true,
     handler: async (args, ctx) => {
-      const disposition = args?.disposition
-      if (!DISPOSITIONS.includes(disposition)) {
-        return { error: `Disposition must be one of: ${DISPOSITIONS.join(', ')}.` }
+      const disposition = toStoredDisposition(args?.disposition)
+      if (!disposition) {
+        return { error: `Disposition must be one of: ${DISPOSITION_CHOICES}.` }
       }
       const note = String(args?.note || '').trim()
       if (!note) return { error: 'Please include a short note explaining the change.' }
@@ -575,7 +587,7 @@ const tools: Record<string, Tool> = {
         leadId: String(lead._id),
         disposition,
       })
-      return { success: true, leadId: String(lead._id), disposition }
+      return { success: true, leadId: String(lead._id), disposition: dispositionLabel(disposition) }
     },
   },
 
@@ -1023,7 +1035,7 @@ export const buildTimySystemPrompt = (ctx: TimyContext): string => {
     '- For any disposition change, the update_lead_disposition tool requires a short note. If the user didn\'t volunteer one, ask once ("What note should I attach?") then proceed with their answer.',
     '- For phone numbers and dates, repeat back what you heard before creating ("So that\'s 9-8-7-6-5-4-3-2-1-0, correct?") because the model can mishear digits over voice.',
     '- ISO timestamps for schedule_followup must be in the user\'s local time with the +05:30 offset (Indian Standard Time). Resolve "tomorrow at 3 pm" → 2026-04-28T15:00:00+05:30 yourself.',
-    '- After a successful action, briefly confirm the change ("Done — Mahesh\'s lead is now Visit Done. Note saved."). Do NOT read back the raw tool output.',
+    '- After a successful action, briefly confirm the change ("Done — Mahesh\'s lead is now Virtual Meeting. Note saved."). Do NOT read back the raw tool output.',
     '- If a tool returns an `error`, paraphrase it in plain language and offer next steps. Never claim something happened if a tool reported an error.',
     `${ctx.isDemo ? '- This is a DEMO account: every write tool will refuse with an error. If the user asks for an action, politely tell them this account is view-only.\n' : ''}`,
     'Conversation style:',

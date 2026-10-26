@@ -9,7 +9,7 @@ import { User } from '../models/User'
 import { AuditLog } from '../models/AuditLog'
 import { exotelConfig } from '../config/exotel'
 import { emitUserAvailabilityUpdate, type UserAvailabilityPayload } from '../config/socket'
-import { DISPOSITIONS } from '../config/constants'
+import { DISPOSITIONS, MEETING_TYPES } from '../config/constants'
 import { closeStaleOpenCall, refreshCallFromExotel, settleOpenCall, syncExotelCallHistory } from '../services/callSync.service'
 import { ExotelManagedCallError, initiateManagedCall } from '../services/exotel.service'
 import { logger } from '../utils/logger'
@@ -68,6 +68,7 @@ const normalizeDispositionInput = (value?: string | null): string | null => {
     connected: 'Contacted/Open',
     contacted: 'Contacted/Open',
     'not-contacted': 'New',
+    'virtual meeting': 'Visit Done',
   }
 
   return legacyMap[trimmed.toLowerCase()] || null
@@ -545,7 +546,7 @@ export const getCallsByLead = async (req: Request, res: Response, next: NextFunc
 
 export const postCallFeedback = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { outcome, stage, disposition, notes, nextFollowUp, followUpAt } = req.body
+    const { outcome, stage, disposition, notes, nextFollowUp, followUpAt, meetingType, meetingLocation } = req.body
     const normalizedDisposition = normalizeDispositionInput(disposition || stage)
     const resolvedNextFollowUp = nextFollowUp || followUpAt || null
 
@@ -570,6 +571,14 @@ export const postCallFeedback = async (req: Request, res: Response, next: NextFu
     }
     if (normalizedDisposition) {
       leadUpdatePayload.disposition = normalizedDisposition
+    }
+    // Meeting Done records where it happened (Client Place / Office Place).
+    if (normalizedDisposition === 'Meeting Done' && (MEETING_TYPES as readonly string[]).includes(meetingType)) {
+      leadUpdatePayload.meetingType = meetingType
+      leadUpdatePayload.meetingLocation =
+        meetingType === 'Client Place' && typeof meetingLocation === 'string' && meetingLocation.trim()
+          ? meetingLocation.trim()
+          : null
     }
     // Append a status note when disposition changes so the change appears in audit trail
     const leadUpdateOp: Record<string, unknown> = { $set: leadUpdatePayload }
