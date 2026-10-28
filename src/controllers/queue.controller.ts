@@ -1,10 +1,9 @@
 import { Request, Response, NextFunction } from 'express'
 import { QueueItem } from '../models/QueueItem'
 import { Lead } from '../models/Lead'
-import { User } from '../models/User'
 import { AuditLog } from '../models/AuditLog'
 import { getLeadOwnershipAction } from '../utils/leadTransferHistory'
-import { findEligibleRep } from '../services/leadRouting.service'
+import { resolveManualAssignee } from '../services/leadRouting.service'
 import { notifyLeadAssigned } from '../services/socket.service'
 
 export const getQueue = async (req: Request, res: Response, next: NextFunction) => {
@@ -60,20 +59,11 @@ export const assignQueueItem = async (req: Request, res: Response, next: NextFun
       return res.status(404).json({ success: false, message: 'Queue item not found' })
     }
 
-    // Eligibility check — same rule the other assignment paths enforce. The
-    // old implementation blindly trusted the body, which meant the queue UI
-    // could route a lead to a rep whose account was deactivated or whose
-    // lead-receiving switch had been turned off. (Issue: "leads are getting
-    // assigned automatically even after the rep account is turned off".)
-    const rep = await findEligibleRep(assignedTo)
+    // A manager picking the rep: never an inactive account, but the
+    // lead-receiving switch (auto-routing only) doesn't block a manager.
+    const { rep, error } = await resolveManualAssignee(assignedTo, req.user!.role)
     if (!rep) {
-      const exists = await User.exists({ _id: assignedTo, role: 'representative' })
-      return res.status(exists ? 409 : 404).json({
-        success: false,
-        message: exists
-          ? 'That representative is not currently accepting new leads (account inactive or lead-receiving switch is off).'
-          : 'Representative not found',
-      })
+      return res.status(error.status).json({ success: false, message: error.message })
     }
 
     item.assignedTo = rep._id as any

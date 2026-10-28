@@ -222,10 +222,10 @@ export const autoRouteQueueItem = async (_queueItemId: string): Promise<boolean>
  *   • `isActive: true` (account not deactivated by a manager)
  *   • `canReceiveLeads !== false` (lead-receiving switch is on)
  *
- * Used by EVERY assignment entry-point (manual assign, bulk assign, queue
- * assign, queue-offer accept, import resolution). Centralising the check
- * means the rule "no leads to off accounts" can never be silently broken
- * by a new code path that forgets one of the two flags.
+ * Used by every AUTOMATIC assignment path (round-robin, queue offers and
+ * accepts) so the rule "no automatic leads to off accounts" can't be broken
+ * by a path that forgets one of the two flags. Deliberate hand-offs use
+ * resolveManualAssignee() below.
  */
 export const findEligibleRep = async (
   userId: string | mongoose.Types.ObjectId
@@ -238,6 +238,47 @@ export const findEligibleRep = async (
     canReceiveLeads: { $ne: false },
   }).select('_id name email notificationPrefs').lean()
   return rep as any
+}
+
+/**
+ * Rules for a person deliberately handing a lead to a rep (single transfer,
+ * bulk assign, queue assign, CSV import). Unlike automatic routing:
+ *   • a deactivated account can never receive leads;
+ *   • the lead-receiving switch only stops auto-routing (Settings → Lead
+ *     Assignment says so), so a MANAGER may still assign to a rep who has it
+ *     off. A representative handing a lead to such a rep is refused.
+ * Returns the rep, or a user-facing reason it can't receive the lead.
+ */
+export const resolveManualAssignee = async (
+  userId: string | mongoose.Types.ObjectId,
+  actorRole: string
+): Promise<
+  | { rep: { _id: mongoose.Types.ObjectId; name: string; email: string; notificationPrefs?: any }; error?: undefined }
+  | { rep?: undefined; error: { status: number; message: string } }
+> => {
+  const notFound = { error: { status: 404, message: 'Representative not found' } }
+  if (!mongoose.Types.ObjectId.isValid(String(userId))) return notFound
+  const rep = await User.findOne({ _id: userId, role: 'representative' })
+    .select('_id name email notificationPrefs isActive canReceiveLeads')
+    .lean()
+  if (!rep) return notFound
+  if (!rep.isActive) {
+    return {
+      error: {
+        status: 409,
+        message: `${rep.name}'s account is inactive. Reactivate it in Settings → Team before assigning leads.`,
+      },
+    }
+  }
+  if (rep.canReceiveLeads === false && actorRole !== 'manager') {
+    return {
+      error: {
+        status: 409,
+        message: `${rep.name} is not taking new leads right now. Ask a manager to transfer this lead.`,
+      },
+    }
+  }
+  return { rep: rep as any }
 }
 
 /** Boolean variant for paths that already have the user — saves a roundtrip. */

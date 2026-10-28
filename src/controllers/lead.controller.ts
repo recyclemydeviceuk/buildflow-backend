@@ -24,7 +24,7 @@ import {
 import { Settings } from '../models/Settings'
 import { sendLeadAssignedEmail } from '../services/ses.service'
 import { notifyNewLeadCreated } from '../services/notification.service'
-import { routeLead, findEligibleRep } from '../services/leadRouting.service'
+import { routeLead, resolveManualAssignee } from '../services/leadRouting.service'
 import { notifyLeadAssigned } from '../services/socket.service'
 import { computeReminderStatus } from '../services/reminder.service'
 import { normalizeNotificationPrefs } from '../utils/notificationPrefs'
@@ -421,18 +421,12 @@ const resolveBulkLeadOwner = async (
     throw new Error('Representative not found')
   }
 
-  // Same eligibility rule as single-assign: account must be active AND
-  // `canReceiveLeads` must not be false. Bulk-assigning a 200-lead batch to a
-  // rep whose account is turned off is a particularly nasty silent failure
-  // mode, so we surface a clear 409 instead.
-  const representative = await findEligibleRep(rawOwner as string)
+  // Same rule as single transfer: never an inactive account; the
+  // lead-receiving switch only binds representatives (it stops auto-routing,
+  // not a manager's own hand-off).
+  const { rep: representative, error } = await resolveManualAssignee(rawOwner as string, req.user!.role)
   if (!representative) {
-    const exists = await User.exists({ _id: rawOwner as string, role: 'representative' })
-    throw new Error(
-      exists
-        ? 'That representative is not currently accepting new leads (account inactive or lead-receiving switch is off).'
-        : 'Representative not found'
-    )
+    throw new Error(error.message)
   }
 
   return {
@@ -839,13 +833,12 @@ export const previewLeadImport = async (req: Request, res: Response, next: NextF
             rows: parsedFile.rows,
             mappings,
             representativeIndexes: buildRepresentativeLookupIndexes(
-              // Eligibility-filtered: a name in the CSV that matches an off
-              // account must NOT silently assign — fall through to the
-              // unmatched-rep warning instead.
+              // Active reps only: a name in the CSV that matches a deactivated
+              // account must NOT assign. The lead-receiving switch is not
+              // checked — it stops auto-routing, not a manager's import.
               await User.find({
                 role: 'representative',
                 isActive: true,
-                canReceiveLeads: { $ne: false },
               }).select('name email phone') as RepresentativeLookupValue[]
             ),
           })
@@ -1086,12 +1079,12 @@ export const importLeadsFromFile = async (req: Request, res: Response, next: Nex
       }
     }
 
+    // Only managers resolve the owner column, so (as with a manual transfer)
+    // a rep whose lead-receiving switch is off can still be named; a
+    // deactivated account cannot.
     const representatives = await User.find({
       role: 'representative',
       isActive: true,
-      // Block lead-import assignments from landing on a rep whose
-      // lead-receiving switch is off, matching every other assign path.
-      canReceiveLeads: { $ne: false },
     }).select('name email phone') as RepresentativeLookupValue[]
     const representativeIndexes = buildRepresentativeLookupIndexes(representatives)
 
@@ -2262,21 +2255,12 @@ export const assignLead = async (req: Request, res: Response, next: NextFunction
     let representativeNotificationPrefs: any = null
 
     if (targetUserId) {
-      // Centralised eligibility check — `isActive: true` AND `canReceiveLeads !== false`.
-      // This blocks managers from manually assigning to a rep whose account is
-      // turned off OR whose lead-receiving switch is off, which was the source
-      // of the "off accounts still get leads" bug.
-      const representative = await findEligibleRep(targetUserId)
+      // Inactive accounts never get leads. The lead-receiving switch only
+      // stops auto-routing, so managers may still hand a lead to that rep;
+      // a representative may not.
+      const { rep: representative, error } = await resolveManualAssignee(targetUserId, req.user!.role)
       if (!representative) {
-        // Distinguish "doesn't exist" from "exists but blocked from receiving"
-        // so the manager understands why the assignment was refused.
-        const exists = await User.exists({ _id: targetUserId, role: 'representative' })
-        return res.status(exists ? 409 : 404).json({
-          success: false,
-          message: exists
-            ? 'That representative is not currently accepting new leads (account inactive or lead-receiving switch is off).'
-            : 'Representative not found',
-        })
+        return res.status(error.status).json({ success: false, message: error.message })
       }
       owner = representative._id
       ownerName = representative.name
